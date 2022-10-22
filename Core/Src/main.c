@@ -18,7 +18,8 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "i2c-lcd.h"
+#include "stdio.h"
+#include "STM32_I2C_Display.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -46,6 +47,11 @@ TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
+/*Variables for Encoder Read*/
+int32_t encoder_value = 0x7FFF;			//Current Encoder Value
+int32_t old_encoder_value = 0x7FFF;		//Previous Encoder Value
+
+
 
 /* USER CODE END PV */
 
@@ -56,6 +62,9 @@ static void MX_I2C1_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
+int32_t Encoder_Read(int32_t *old_value);
+void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t raw_pos);
+
 
 /* USER CODE END PFP */
 
@@ -96,17 +105,38 @@ int main(void)
   MX_TIM1_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-
+  //Encoder Initialization
+  HAL_TIM_Encoder_Start_IT(&htim1, TIM_CHANNEL_ALL);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  int32_t value = 0;
+  int32_t old_value = 0;
+  LiquidCrystal_I2C(0x4E, 20, 4);
+  lcdBegin();
+  lcdSetCursor(1,1);
+  lcdPrint("Power Feed V2.0 DEV");
+  lcdBacklight();
+
   while (1)
   {
+	  HAL_Delay(10);
+	  encoder_value = Encoder_Read(&old_encoder_value);
+	  value = value + encoder_value;
+	  //sprintf(str, "%ld", value);
+	  if (value != old_value){
+		  old_value = value;
+		  LCD_Write_Number(value, 1, 3);
+	  }
+	  lcdSetCursor(1,2);
+	  lcdPrint("Encoder: ");
+	  HAL_Delay(10);
+	  }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-  }
+
   /* USER CODE END 3 */
 }
 
@@ -218,11 +248,11 @@ static void MX_TIM1_Init(void)
   sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC1Filter = 0;
+  sConfig.IC1Filter = 2;
   sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC2Filter = 0;
+  sConfig.IC2Filter = 2;
   if (HAL_TIM_Encoder_Init(&htim1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -234,7 +264,8 @@ static void MX_TIM1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN TIM1_Init 2 */
-
+  TIM1->CNT = 0x7FFF;		//Initialization CNT in middle value to avoid Over/Under flow
+  TIM1->SR = ~(1UL << 0);	//Clear UIF flag
   /* USER CODE END TIM1_Init 2 */
 
 }
@@ -331,6 +362,84 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+  * @brief Encoder Steps Read Function
+  * @param old_value - Pointer to the value storaged as latest encoder value
+  * @retval encoder_steps - Number of steps increased or decreased on the encoder
+  */
+int32_t Encoder_Read(int32_t *old_value)
+{
+	int32_t encoder_steps;
+
+	if (TIM1->SR & (1 << 0)){		//If overflow or underflow occurs reset the CNT value
+		TIM1->SR = ~(1UL << 0);		//Reset UIF bit
+		TIM1->CNT = 0x7FFF;			//Reload CNT register to ox7FFF
+		return 0;					//Return 0
+	}
+
+	uint16_t encoder_value = TIM1->CNT;		//Variable to storage the CNT register value
+	if ( ( encoder_value - *old_value >= 2 ) || ( encoder_value - *old_value <= -2 ) ){		//If the value in the encoder register changed (At least 2, to avoid glitches) calculate increment
+		encoder_steps = (*old_value - encoder_value)/2;	//Divide by 2 is needed due to increments by two on the encoder
+		*old_value = encoder_value;			//Reload the old_value
+		return encoder_steps;				//Return the increments, can be positive or negative
+	}else{
+		return 0;							//Return 0 in case no changes
+	}
+}
+
+/**
+  * @brief Function to write number into LCD, will clear the fields not used.
+  * @param 	value - value which expected to be writen into the LCD
+  * 		col_pos - column position for the number
+  * 		row_pos - raw position for the number
+  * @retval
+  */
+void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t raw_pos)
+{
+	char str[10];
+	sprintf(str, "%ld", value);
+	if (value > 0){
+		if (value < 10){
+			lcdSetCursor(col_pos+1,raw_pos);
+			lcdPrint(" ");
+			lcdSetCursor(col_pos,raw_pos);
+			lcdPrint(str);
+		}else if (value < 100){
+			lcdSetCursor(col_pos+1,raw_pos);
+			lcdPrint("  ");
+			lcdSetCursor(col_pos,raw_pos);
+			lcdPrint(str);
+		}else if (value < 1000){
+			lcdSetCursor(col_pos+1,raw_pos);
+			lcdPrint("   ");
+			lcdSetCursor(col_pos,raw_pos);
+			lcdPrint(str);
+		}
+	}else if (value < 0) {
+		if (value > -10){
+			lcdSetCursor(col_pos+2,raw_pos);
+			lcdPrint(" ");
+			lcdSetCursor(col_pos,raw_pos);
+			lcdPrint(str);
+		}else if (value > -100){
+			lcdSetCursor(col_pos+2,raw_pos);
+			lcdPrint("  ");
+			lcdSetCursor(col_pos,raw_pos);
+			lcdPrint(str);
+		}else if (value > -1000){
+			lcdSetCursor(col_pos+2,raw_pos);
+			lcdPrint("   ");
+			lcdSetCursor(col_pos,raw_pos);
+			lcdPrint(str);
+		}
+	}else{
+		lcdSetCursor(col_pos+1,raw_pos);
+		lcdPrint(" ");
+		lcdSetCursor(col_pos,2);
+		lcdPrint(str);
+	}
+}
 
 /* USER CODE END 4 */
 

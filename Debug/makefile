@@ -60,8 +60,8 @@ all: main-build
 main-build: PowerFeed_V2.elf secondary-outputs
 
 # Tool invocations
-PowerFeed_V2.elf PowerFeed_V2.map: $(OBJS) $(USER_OBJS) C:\Users\CarlosWork\Documents\PowerFeed_V2\STM32F401CCUX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "PowerFeed_V2.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\CarlosWork\Documents\PowerFeed_V2\STM32F401CCUX_FLASH.ld" --specs=nosys.specs -Wl,-Map="PowerFeed_V2.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+PowerFeed_V2.elf PowerFeed_V2.map: $(OBJS) $(USER_OBJS) C:\Users\CarlosWork\Documents\GitHub\PowerFeed_V2\STM32F401CCUX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "PowerFeed_V2.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"C:\Users\CarlosWork\Documents\GitHub\PowerFeed_V2\STM32F401CCUX_FLASH.ld" --specs=nosys.specs -Wl,-Map="PowerFeed_V2.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
