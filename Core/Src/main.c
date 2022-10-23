@@ -33,6 +33,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define RIGHT 1			//Definition RIGHT to 1
+#define LEFT 0			//Definition RIGHT to 1
+#define CLK_FREQ_T2	42000000		//Frequency for the Clock, used on TIM2
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -50,9 +53,10 @@ TIM_HandleTypeDef htim2;
 /*Variables for Encoder Read*/
 int32_t encoder_value = 0x7FFF;			//Current Encoder Value
 int32_t old_encoder_value = 0x7FFF;		//Previous Encoder Value
-
-
-
+uint16_t en_invert = 0;					//Variable to storage the value of Invert for ENABLE PIN
+uint16_t dir_invert = 0;				//Variable to invert the value of Invert for DIR PIN
+uint16_t motor_stepsrev = 1600;			//Variable to storage the steps/rev for the motor
+uint16_t leadscrew_pitch = 2;			//VAriable to storage the pitch for the leadscrew in mm/rev
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -64,7 +68,10 @@ static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 int32_t Encoder_Read(int32_t *old_value);
 void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t raw_pos);
-
+void Motor_Enable(uint16_t invert);
+void Motor_Disable(uint16_t invert);
+void Motor_Direction(uint16_t direction, uint16_t invert);
+void Motor_Speed_RPM(uint16_t speed);
 
 /* USER CODE END PFP */
 
@@ -292,7 +299,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 4294967295;
+  htim2.Init.Period = 2;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -315,7 +322,7 @@ static void MX_TIM2_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
+  sConfigOC.Pulse = 1;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_ENABLE;
   if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
@@ -439,6 +446,54 @@ void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t raw_pos)
 		lcdSetCursor(col_pos,2);
 		lcdPrint(str);
 	}
+}
+
+/**
+  * @brief Function to Enable EN signal for Motor Driver
+  * @param 	invert - variable to invert the EN pin logic
+  * @retval
+  */
+void Motor_Enable(uint16_t invert){
+	HAL_GPIO_WritePin(GPIOA, ENABLE_Pin, (GPIO_PIN_SET^invert));	//Enable Motor, XOR with SET to invert it if selected
+}
+
+/**
+  * @brief Function to Disable EN signal for Motor Driver
+  * @param 	invert - variable to invert the EN pin logic
+  * @retval
+  */
+void Motor_Disable(uint16_t invert){
+	HAL_GPIO_WritePin(GPIOA, ENABLE_Pin, (GPIO_PIN_RESET^invert));	//Disable Motor, XOR with SET to invert it if selected
+	HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_1);
+}
+
+/**
+  * @brief Function to select the direction of the motor
+  * @param 	direction - variable to set the direction of the motor
+  * 		invert - variable to invert the DIR pin logic
+  * @retval
+  */
+void Motor_Direction(uint16_t direction, uint16_t invert){
+	if ( direction == RIGHT ){
+		HAL_GPIO_WritePin(GPIOA, DIR_Pin, (GPIO_PIN_SET^invert));	//Disable Motor, XOR with SET to invert it if selected
+	}else if (direction == LEFT){
+		HAL_GPIO_WritePin(GPIOA, DIR_Pin, (GPIO_PIN_RESET^invert));	//Disable Motor, XOR with SET to invert it if selected
+	}
+
+}
+
+/**
+  * @brief Function to select the speed of the motor in RPM
+  * @param 	rpm - Speed value in RPM it is wanted
+  * @retval
+  */
+void Motor_Speed_RPM(uint16_t speed){
+	float ARR_value_temp = 0;
+	uint32_t ARR_value;
+	ARR_value_temp = ((60 * (float) CLK_FREQ_T2)/(speed*motor_stepsrev));
+	ARR_value = (uint32_t) ARR_value_temp;
+	TIM2->ARR = ARR_value+1;
+	TIM2->CCR1 = (uint32_t) (ARR_value+1)/2;
 }
 
 /* USER CODE END 4 */
