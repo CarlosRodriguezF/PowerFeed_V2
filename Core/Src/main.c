@@ -18,12 +18,11 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "stdio.h"
-#include "STM32_I2C_Display.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "stdio.h"
+#include "STM32_I2C_Display.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,6 +35,10 @@
 #define RIGHT 1			//Definition RIGHT to 1
 #define LEFT 0			//Definition RIGHT to 1
 #define CLK_FREQ_T2	42000000		//Frequency for the Clock, used on TIM2
+#define ACC_UPDATE_RATIO 50			//RAtio for Acceleration update in ms (MAX 1 Second)
+#define HIGH_SPEED_INCREMENT 50		//Increment where Target speed if higher than min speed gap
+#define LOW_SPEED_INCREMENT 1		//Increment where Target speed if higher than min speed gap
+#define MIN_SPEED_GAP 30			//Difference between target and current speed to use HIGH_SPEED_INCREMENT
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -48,6 +51,7 @@ I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim11;
 
 /* USER CODE BEGIN PV */
 /*Variables for Encoder Read*/
@@ -57,6 +61,10 @@ uint16_t en_invert = 0;					//Variable to storage the value of Invert for ENABLE
 uint16_t dir_invert = 0;				//Variable to invert the value of Invert for DIR PIN
 uint16_t motor_stepsrev = 1600;			//Variable to storage the steps/rev for the motor
 uint16_t leadscrew_pitch = 2;			//VAriable to storage the pitch for the leadscrew in mm/rev
+uint16_t current_speed = 0;				//Variable for the current speed
+uint16_t target_speed = 0;				//Variable for the target_speed
+/* FLAG */
+uint16_t update_speed = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -65,6 +73,7 @@ static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_TIM11_Init(void);
 /* USER CODE BEGIN PFP */
 int32_t Encoder_Read(int32_t *old_value);
 void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t raw_pos);
@@ -72,7 +81,7 @@ void Motor_Enable(uint16_t invert);
 void Motor_Disable(uint16_t invert);
 void Motor_Direction(uint16_t direction, uint16_t invert);
 void Motor_Speed_RPM(uint16_t speed);
-
+uint16_t Motor_Speed_Update(uint16_t *current_speed, uint16_t *target_speed);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -111,35 +120,28 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
+  MX_TIM11_Init();
   /* USER CODE BEGIN 2 */
   //Encoder Initialization
   HAL_TIM_Encoder_Start_IT(&htim1, TIM_CHANNEL_ALL);
+  HAL_TIM_Base_Start_IT(&htim11);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  int32_t value = 0;
-  int32_t old_value = 0;
   LiquidCrystal_I2C(0x4E, 20, 4);
   lcdBegin();
   lcdSetCursor(1,1);
-  lcdPrint("Power Feed V2.0 DEV");
+  lcdPrint("Power Feed V2.0");
   lcdBacklight();
+  lcdClear();
 
   while (1)
   {
-	  HAL_Delay(10);
-	  encoder_value = Encoder_Read(&old_encoder_value);
-	  value = value + encoder_value;
-	  //sprintf(str, "%ld", value);
-	  if (value != old_value){
-		  old_value = value;
-		  LCD_Write_Number(value, 1, 3);
-	  }
-	  lcdSetCursor(1,2);
-	  lcdPrint("Encoder: ");
+	  lcdClear();
 	  HAL_Delay(10);
 	  }
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -337,6 +339,41 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief TIM11 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM11_Init(void)
+{
+
+  /* USER CODE BEGIN TIM11_Init 0 */
+	float TIM11_period_ms = (float)ACC_UPDATE_RATIO/1000;		//Period to load into the timer, calculated from Define
+	uint16_t TIM11_preescaler = 642;							//Preescaler, max 1 second
+	uint16_t TIM11_ARR;
+	TIM11_ARR = ( (float) (CLK_FREQ_T2/(TIM11_preescaler+1))*TIM11_period_ms );	//Calculation value for ARR register to set correct period
+
+  /* USER CODE END TIM11_Init 0 */
+
+  /* USER CODE BEGIN TIM11_Init 1 */
+
+  /* USER CODE END TIM11_Init 1 */
+  htim11.Instance = TIM11;
+  htim11.Init.Prescaler = TIM11_preescaler;
+  htim11.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim11.Init.Period = TIM11_ARR;
+  htim11.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim11.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim11) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM11_Init 2 */
+
+  /* USER CODE END TIM11_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -369,6 +406,14 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+// Callback: timer has rolled over
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
+	if (htim == &htim11 ){
+		update_speed = 1;
+	}
+}
+
 
 /**
   * @brief Encoder Steps Read Function
@@ -441,10 +486,10 @@ void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t raw_pos)
 			lcdPrint(str);
 		}
 	}else{
-		lcdSetCursor(col_pos+1,raw_pos);
-		lcdPrint(" ");
-		lcdSetCursor(col_pos,2);
-		lcdPrint(str);
+		lcdSetCursor(col_pos,raw_pos);
+		lcdPrint("  ");
+		lcdSetCursor(col_pos,raw_pos);
+		lcdPrint("0");
 	}
 }
 
@@ -490,10 +535,38 @@ void Motor_Direction(uint16_t direction, uint16_t invert){
 void Motor_Speed_RPM(uint16_t speed){
 	float ARR_value_temp = 0;
 	uint32_t ARR_value;
-	ARR_value_temp = ((60 * (float) CLK_FREQ_T2)/(speed*motor_stepsrev));
-	ARR_value = (uint32_t) ARR_value_temp;
-	TIM2->ARR = ARR_value+1;
-	TIM2->CCR1 = (uint32_t) (ARR_value+1)/2;
+	ARR_value_temp = ((60 * (float) CLK_FREQ_T2)/(speed*motor_stepsrev));	//Calculation Value to load in ARR
+	ARR_value = (uint32_t) ARR_value_temp;	//Uint32 casting
+	TIM2->ARR = ARR_value+1;				//Load ARR + 1
+	TIM2->CCR1 = (uint32_t) (ARR_value+1)/2;	//Load CCR1 to have always 50% Duty Cycle
+	if ((TIM2->CR1 & (1 << 0)) ^ (1 << 0)){			//Checking if the Timer is already enabled, if not, enable it
+		HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+	}
+}
+
+/**
+  * @brief Function to update the speed of the motor following the acceleration
+  * @param 	current_speed - Current speed of the motor
+  * 		target_speed - Target speed of the motor
+  * @retval updated_speed - Updated speed of the motor
+  */
+uint16_t Motor_Speed_Update(uint16_t *current_speed, uint16_t *target_speed){
+	if (*target_speed > *current_speed){			//Speed Incrementation
+		if( (*target_speed - *current_speed) > MIN_SPEED_GAP ){		//If gap is bigger than MIN_SPEED_GAP, increment higher
+			*current_speed = *current_speed + HIGH_SPEED_INCREMENT;	//Increment Speed
+		}else{
+			*current_speed = *current_speed + LOW_SPEED_INCREMENT;	//If the gap is lower, then increase lower
+		}
+	}else if (*target_speed < *current_speed){		//Speed lowering
+		if( (*current_speed - *target_speed) > MIN_SPEED_GAP ){		//If gap is bigger than MIN_SPEED_GAP, decrease higher
+			*current_speed = *current_speed - HIGH_SPEED_INCREMENT;	//Increment Speed
+		}else{
+			*current_speed = *current_speed - LOW_SPEED_INCREMENT;	//If the gap is lower, then decrease lower
+		}
+	}else if (*target_speed == *current_speed){		//Speed match
+
+	}
+	return *current_speed;
 }
 
 /* USER CODE END 4 */
