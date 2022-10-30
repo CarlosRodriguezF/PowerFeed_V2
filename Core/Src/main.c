@@ -32,13 +32,26 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define TRUE 1
+#define FALSE 0
+#define FAIL -1
+#define MID 2
 #define RIGHT 1			//Definition RIGHT to 1
-#define LEFT 0			//Definition RIGHT to 1
+#define LEFT 0			//Definition LEFT to 0
 #define CLK_FREQ_T2	42000000		//Frequency for the Clock, used on TIM2
 #define ACC_UPDATE_RATIO 50			//RAtio for Acceleration update in ms (MAX 1 Second)
 #define HIGH_SPEED_INCREMENT 50		//Increment where Target speed if higher than min speed gap
 #define LOW_SPEED_INCREMENT 1		//Increment where Target speed if higher than min speed gap
 #define MIN_SPEED_GAP 30			//Difference between target and current speed to use HIGH_SPEED_INCREMENT
+/*Defines for State Machine*/
+#define INITIALIZATION	 0			//Initialization state
+#define STANDBY			 3			//Standby State no Movement
+#define MOVE_RIGHT		 1			//Move right state
+#define MOVE_LEFT		 2			//Move left state
+
+#define STEP_NORMAL 0				//Define to select STEP NORMAL
+#define STEP_x10 	1				//Define to select step mode x10
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -48,7 +61,6 @@
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
-
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim11;
@@ -57,14 +69,27 @@ TIM_HandleTypeDef htim11;
 /*Variables for Encoder Read*/
 int32_t encoder_value = 0x7FFF;			//Current Encoder Value
 int32_t old_encoder_value = 0x7FFF;		//Previous Encoder Value
+
+uint16_t state = INITIALIZATION;		//Variable for the main state machine
+uint16_t previous_state = INITIALIZATION;		//Variable for the previous state machine
+uint16_t next_state = INITIALIZATION;			//Variable for the next state machine
+
+uint16_t step_mode = STEP_NORMAL;		//Select mode of increase steps
+
 uint16_t en_invert = 0;					//Variable to storage the value of Invert for ENABLE PIN
 uint16_t dir_invert = 0;				//Variable to invert the value of Invert for DIR PIN
 uint16_t motor_stepsrev = 1600;			//Variable to storage the steps/rev for the motor
 uint16_t leadscrew_pitch = 2;			//VAriable to storage the pitch for the leadscrew in mm/rev
 uint16_t current_speed = 0;				//Variable for the current speed
 uint16_t target_speed = 0;				//Variable for the target_speed
-/* FLAG */
+int32_t current_feedrate = 0;			//Variable for the current feedrate
+int32_t target_feedrate = 100;			//Variable for the target feedrate
+
+uint16_t MAX_FEEDRATE = 500;			//Maximum Feedrate on mm/min
+
+/* FLAGS*/
 uint16_t update_speed = 0;
+uint16_t lcd_update = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -75,13 +100,17 @@ static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM11_Init(void);
 /* USER CODE BEGIN PFP */
-int32_t Encoder_Read(int32_t *old_value);
-void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t raw_pos);
+int32_t Encoder_Read(void);
+void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t row_pos);
 void Motor_Enable(uint16_t invert);
 void Motor_Disable(uint16_t invert);
 void Motor_Direction(uint16_t direction, uint16_t invert);
 void Motor_Speed_RPM(uint16_t speed);
 uint16_t Motor_Speed_Update(uint16_t *current_speed, uint16_t *target_speed);
+void LCD_Write_Feedrate(int32_t feedrate, int32_t col_pos, int32_t row_pos);
+int16_t Switch_Status_Read(void);
+void Update_Feedrate(int32_t *feedrate);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -122,6 +151,16 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM11_Init();
   /* USER CODE BEGIN 2 */
+  LiquidCrystal_I2C(0x4E, 20, 4);
+  lcdBegin();
+  lcdSetCursor(2,1);
+  lcdPrint("Power Feed V2.0");
+  HAL_Delay(2000);
+  lcdClear();
+  lcd_update = FALSE;
+  //lcdBacklight();
+
+
   //Encoder Initialization
   HAL_TIM_Encoder_Start_IT(&htim1, TIM_CHANNEL_ALL);
   HAL_TIM_Base_Start_IT(&htim11);
@@ -129,20 +168,35 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  LiquidCrystal_I2C(0x4E, 20, 4);
-  lcdBegin();
-  lcdSetCursor(1,1);
-  lcdPrint("Power Feed V2.0");
-  lcdBacklight();
-  lcdClear();
 
   while (1)
   {
-	  lcdClear();
-	  HAL_Delay(10);
+	  switch (state)
+	  {
+	  	  case INITIALIZATION:
+	  		  if ( Switch_Status_Read() != MID ){	//If the switch is not in MID state, report error
+	  			  lcdSetCursor(8,1);				//Print Error message
+	  			  lcdPrint("ERROR!");
+	  			  lcdSetCursor(3,2);
+	  			  lcdPrint("Release Switch");
+	  		  }else{								//If the Switch is in MID position print the default screen
+	  			  lcdClear();
+				  lcdSetCursor(0,0);
+				  lcdPrint("Feed Rate:");
+				  lcdSetCursor(0,1);
+				  lcdPrint("Mode: STOP");
+				  LCD_Write_Feedrate(target_feedrate, 11, 0);	//Print the default speed
+				  state = STANDBY;								//Go to standby
+	  		  }
+	  		  break;
+	  	  case STANDBY:
+	  		Update_Feedrate(&target_feedrate);
+	  		LCD_Write_Feedrate(target_feedrate, 11, 0);	//Print the default speed
+	  		  break;
 	  }
+  }
 
-    /* USER CODE END WHILE */
+  /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
 
@@ -420,20 +474,22 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
   * @param old_value - Pointer to the value storaged as latest encoder value
   * @retval encoder_steps - Number of steps increased or decreased on the encoder
   */
-int32_t Encoder_Read(int32_t *old_value)
+int32_t Encoder_Read(void)
 {
 	int32_t encoder_steps;
+	static int32_t old_value = 0x7FFF;		//Initialization old_value variable
 
 	if (TIM1->SR & (1 << 0)){		//If overflow or underflow occurs reset the CNT value
 		TIM1->SR = ~(1UL << 0);		//Reset UIF bit
 		TIM1->CNT = 0x7FFF;			//Reload CNT register to ox7FFF
+		old_value = 0x7FFF;
 		return 0;					//Return 0
 	}
 
 	uint16_t encoder_value = TIM1->CNT;		//Variable to storage the CNT register value
-	if ( ( encoder_value - *old_value >= 2 ) || ( encoder_value - *old_value <= -2 ) ){		//If the value in the encoder register changed (At least 2, to avoid glitches) calculate increment
-		encoder_steps = (*old_value - encoder_value)/2;	//Divide by 2 is needed due to increments by two on the encoder
-		*old_value = encoder_value;			//Reload the old_value
+	if ( ( encoder_value - old_value >= 2 ) || ( encoder_value - old_value <= -2 ) ){		//If the value in the encoder register changed (At least 2, to avoid glitches) calculate increment
+		encoder_steps = (old_value - encoder_value)/2;	//Divide by 2 is needed due to increments by two on the encoder
+		old_value = encoder_value;			//Reload the old_value
 		return encoder_steps;				//Return the increments, can be positive or negative
 	}else{
 		return 0;							//Return 0 in case no changes
@@ -447,48 +503,48 @@ int32_t Encoder_Read(int32_t *old_value)
   * 		row_pos - raw position for the number
   * @retval
   */
-void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t raw_pos)
+void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t row_pos)
 {
 	char str[10];
 	sprintf(str, "%ld", value);
 	if (value > 0){
 		if (value < 10){
-			lcdSetCursor(col_pos+1,raw_pos);
+			lcdSetCursor(col_pos+1,row_pos);
 			lcdPrint(" ");
-			lcdSetCursor(col_pos,raw_pos);
+			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
 		}else if (value < 100){
-			lcdSetCursor(col_pos+1,raw_pos);
+			lcdSetCursor(col_pos+1,row_pos);
 			lcdPrint("  ");
-			lcdSetCursor(col_pos,raw_pos);
+			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
 		}else if (value < 1000){
-			lcdSetCursor(col_pos+1,raw_pos);
+			lcdSetCursor(col_pos+1,row_pos);
 			lcdPrint("   ");
-			lcdSetCursor(col_pos,raw_pos);
+			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
 		}
 	}else if (value < 0) {
 		if (value > -10){
-			lcdSetCursor(col_pos+2,raw_pos);
+			lcdSetCursor(col_pos+2,row_pos);
 			lcdPrint(" ");
-			lcdSetCursor(col_pos,raw_pos);
+			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
 		}else if (value > -100){
-			lcdSetCursor(col_pos+2,raw_pos);
+			lcdSetCursor(col_pos+2,row_pos);
 			lcdPrint("  ");
-			lcdSetCursor(col_pos,raw_pos);
+			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
 		}else if (value > -1000){
-			lcdSetCursor(col_pos+2,raw_pos);
+			lcdSetCursor(col_pos+2,row_pos);
 			lcdPrint("   ");
-			lcdSetCursor(col_pos,raw_pos);
+			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
 		}
 	}else{
-		lcdSetCursor(col_pos,raw_pos);
+		lcdSetCursor(col_pos,row_pos);
 		lcdPrint("  ");
-		lcdSetCursor(col_pos,raw_pos);
+		lcdSetCursor(col_pos,row_pos);
 		lcdPrint("0");
 	}
 }
@@ -568,6 +624,63 @@ uint16_t Motor_Speed_Update(uint16_t *current_speed, uint16_t *target_speed){
 	}
 	return *current_speed;
 }
+
+/**
+  * @brief Function to write number into LCD the feedrate in the desired position
+  * @param 	feedrate - feedrate value which expected to be writen into the LCD
+  * 		col_pos - column position for the number
+  * 		row_pos - raw position for the number
+  * @retval
+  */
+void LCD_Write_Feedrate(int32_t feedrate, int32_t col_pos, int32_t row_pos){
+	static int32_t saved_feedrate;
+	if ( saved_feedrate != feedrate ){				//Print only if the feedrate changed
+		LCD_Write_Number(feedrate,col_pos,row_pos);		//Write the number in the desired position
+		lcdPrint("mm/min ");							//Adding mm/min
+		saved_feedrate = feedrate;						//Updating Feedrate Saved
+	}
+}
+
+/**
+  * @brief Function to read the value for the switchs
+  * @param	- NONE
+  * @retval	- Switch Status
+  */
+int16_t Switch_Status_Read(void){
+	int16_t switch_right, switch_left, sw_status;
+	switch_right = HAL_GPIO_ReadPin(SW_RIGHT_GPIO_Port, SW_RIGHT_Pin);
+	switch_left = HAL_GPIO_ReadPin(SW_LEFT_GPIO_Port, SW_LEFT_Pin);
+	if ( !switch_right & !switch_left ){
+		sw_status = FAIL;
+	}else if( switch_right & switch_left ){
+		sw_status = MID;
+	}else if ( ( !switch_right ) & switch_left ){
+		sw_status = RIGHT;
+	}else if ( switch_right & ( !switch_left ) ){
+		sw_status = LEFT;
+	}
+	return sw_status;
+}
+
+/**
+  * @brief Update Feedrate Function
+  * @param old_value - Pointer to the value storaged as latest feedrate value
+  * @retval new_feedrate - Updated Feedrate
+  */
+void Update_Feedrate(int32_t *feedrate){
+	if (step_mode == STEP_NORMAL){
+		*feedrate += Encoder_Read();	//Update Feedrate
+	}else if (step_mode == STEP_x10){
+		*feedrate += ( 10 * Encoder_Read());	//Update Feedrate
+	}
+	if (*feedrate <= 0){
+		*feedrate = 1;
+	}else if (*feedrate > MAX_FEEDRATE){
+		*feedrate = MAX_FEEDRATE;
+	}
+}
+
+
 
 /* USER CODE END 4 */
 
