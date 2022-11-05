@@ -40,10 +40,12 @@
 #define MID 2
 #define RIGHT 1						//Definition RIGHT to 1
 #define LEFT 0						//Definition LEFT to 0
+#define TRUE_HOLD 3					//VAriable to check if buttom is holded pressed
 #define CLK_FREQ_T2	42000000		//Frequency for the Clock, used on TIM2
 #define ACC_UPDATE_RATIO 50			//RAtio for Acceleration update in ms (MAX 1 Second)
 #define ACC_TIME 1000				//Acceleration time in ms
-#define DEBOUNCING_TIME 100			//TIme for checking debouncing FLAG (MAX 1 Second)
+#define DEBOUNCING_TIME 100			//TIme for checking debouncing FLAG in ms (MAX 1 Second)
+#define	SW_HOLD_TIME 10				//Multiplier x100 to obtain the time we want to keep the button pressed to being hold pressing
 #define HIGH_SPEED_INCREMENT 10		//Increment where Target speed if higher than min speed gap
 #define LOW_SPEED_INCREMENT 1		//Increment where Target speed if higher than min speed gap
 #define MIN_SPEED_GAP 30			//Difference between target and current speed to use HIGH_SPEED_INCREMENT
@@ -87,12 +89,14 @@ uint16_t dir_invert = 0;				//Variable to invert the value of Invert for DIR PIN
 uint16_t motor_stepsrev = 1600;			//Variable to storage the steps/rev for the motor
 float leadscrew_pitch = 2;				//Variable to storage the pitch for the leadscrew in mm/rev
 uint16_t MAX_FEEDRATE = 500;			//Maximum Feedrate on mm/min
+uint16_t FAST_MOVEMENT_FEEDRATE = 500;	//Variable to storage the fast movement feedrate when holding fast move buton.
 
 /*General variables*/
 int16_t current_feedrate = 0;			//Variable for the current feedrate
 int16_t target_feedrate = 200;			//Variable for the target feedrate
 int16_t display_feedrate = 200;			//Variable to display the target feedrate into the screen
-uint16_t sw_status = 0;
+uint16_t sw_status = 0;					//Variable to storage the  sw status
+uint16_t encoder_sw_status = 0;			//Variable to storage the encoder sw status
 
 /* FLAGS*/
 uint16_t update_speed = 0;				//Flag to update the speed
@@ -232,16 +236,30 @@ int main(void)
 	  		}
 	  		  break;
 	  	  case MOVE_RIGHT:	//Right state, movement to the RIGHT
+	  		  encoder_sw_status = Encoder_Switch_Status_Read();
+	  		  if ( encoder_sw_status == TRUE ){	//Check if the encoder is pressed to change the step mode
+	  			  if (step_mode == STEP_NORMAL){
+	  				  step_mode = STEP_x10;
+	  			  }else if(step_mode == STEP_x10){
+	  				  step_mode = STEP_NORMAL;
+	  			  }
+	  		  }else if ( encoder_sw_status == TRUE_HOLD ){
+	  			target_feedrate = FAST_MOVEMENT_FEEDRATE;
+	  		  }else if ( encoder_sw_status == FALSE ){
+	  			target_feedrate = display_feedrate;
+	  		  }
 	  		  sw_status = Switch_Status_Read();		//Read the switch
 	  		  if ( sw_status == RIGHT ){			//If it is on right position, update the feedrate target comming from others modes
 	  			  if (target_feedrate == 0){
 	  				  target_feedrate = display_feedrate;
 	  			  }
-	  			  Update_Feedrate(&target_feedrate);				//Update the feedrate from encoder
-		  		  if (display_feedrate != target_feedrate){			//Check if the feedrate changed to update LCD
-		  			  display_feedrate = target_feedrate;
-		  			  LCD_Write_Feedrate(display_feedrate, 11, 0);	//Print the default speed
-		  		  }
+	  			  if (encoder_sw_status != TRUE_HOLD){
+					  Update_Feedrate(&target_feedrate);				//Update the feedrate from encoder
+					  if (display_feedrate != target_feedrate){			//Check if the feedrate changed to update LCD
+						  display_feedrate = target_feedrate;
+						  LCD_Write_Feedrate(display_feedrate, 11, 0);	//Print the default speed
+					  }
+	  			  }
 	  		  }else if ( sw_status == LEFT){		//If it is on left position, change to left, set feedrate to zero
 		  		target_feedrate = 0;
 			  	if ( current_feedrate == 0 ){		//If motor is stopped then move to left status
@@ -275,25 +293,32 @@ int main(void)
 	  			  current_feedrate = Motor_Feedrate_Update(&current_feedrate, &target_feedrate);
 				  update_speed = 0;					//Reset the update_speed flag
 	  		  }
-	  		  if ( Encoder_Switch_Status_Read() ){	//Check if the encoder is pressed to change the step mode
+	  		  break;
+	  	  case MOVE_LEFT:
+	  		  encoder_sw_status = Encoder_Switch_Status_Read();
+	  		  if ( encoder_sw_status == TRUE ){	//Check if the encoder is pressed to change the step mode
 	  			  if (step_mode == STEP_NORMAL){
 	  				  step_mode = STEP_x10;
 	  			  }else if(step_mode == STEP_x10){
 	  				  step_mode = STEP_NORMAL;
 	  			  }
+	  		  }else if ( encoder_sw_status == TRUE_HOLD ){
+	  			target_feedrate = FAST_MOVEMENT_FEEDRATE;
+	  		  }else if ( encoder_sw_status == FALSE ){
+	  			target_feedrate = display_feedrate;
 	  		  }
-	  		  break;
-	  	  case MOVE_LEFT:
 	  		  sw_status = Switch_Status_Read();		//Read the switch
 	  		  if ( sw_status == LEFT ){				//If it is on left position, update the feedrate target comming from others modes
 	  			  if (target_feedrate == 0){
 	  				  target_feedrate = display_feedrate;
 	  			  }
-	  			  Update_Feedrate(&target_feedrate);				//Update the feedrate from encoder
-		  		  if (display_feedrate != target_feedrate){			//Check if the feedrate changed to update LCD
-		  			  display_feedrate = target_feedrate;
-		  			  LCD_Write_Feedrate(display_feedrate, 11, 0);	//Print the default speed
-		  		  }
+	  			  if (encoder_sw_status != TRUE_HOLD){
+					  Update_Feedrate(&target_feedrate);				//Update the feedrate from encoder
+					  if (display_feedrate != target_feedrate){			//Check if the feedrate changed to update LCD
+						  display_feedrate = target_feedrate;
+						  LCD_Write_Feedrate(display_feedrate, 11, 0);	//Print the default speed
+					  }
+	  			  }
 	  		  }else if ( sw_status == RIGHT){		//If it is on right position, change to right, set feedrate to zero
 		  		target_feedrate = 0;
 		  		if ( current_feedrate == 0 ){		//If motor is stopped then move to right status
@@ -326,13 +351,6 @@ int main(void)
 	  		  if (update_speed){					//Update speed if the flag is set
 	  			  current_feedrate = Motor_Feedrate_Update(&current_feedrate, &target_feedrate);
 				  update_speed = 0;					//Reset the update_speed flag
-	  		  }
-	  		  if ( Encoder_Switch_Status_Read() ){	//Check if the encoder is pressed to change the step mode
-	  			  if (step_mode == STEP_NORMAL){
-	  				  step_mode = STEP_x10;
-	  			  }else if(step_mode == STEP_x10){
-	  				  step_mode = STEP_NORMAL;
-	  			  }
 	  		  }
 	  		  break;
 	  }
@@ -916,26 +934,41 @@ void Update_Feedrate(int16_t *feedrate){
 /**
   * @brief Function to read the value for the encoder switch
   * @param	- NONE
-  * @retval	- Encoder Switch Status
+  * @retval	- Encoder Switch Status TRUE, FALSE or TRUE_HOLD
   */
 int16_t Encoder_Switch_Status_Read(void){
 	static uint16_t temp_debouncing = 0;	//Temporal variable to storage the debouncing
 	static uint16_t previous_en_sw_status;	//Variable to storage the previous status of the encoder switch
 	uint16_t en_sw_status;
+	uint16_t encoder_sw_read_value;
 
-	if ( ( !HAL_GPIO_ReadPin(EN_SW_GPIO_Port, EN_SW_Pin) ) && ( !debouncing_en_sw ) ){	//If encoder is pressed and debouncing not enable
+	encoder_sw_read_value = HAL_GPIO_ReadPin(EN_SW_GPIO_Port, EN_SW_Pin);
+
+	if ( ( !encoder_sw_read_value ) && ( !debouncing_en_sw ) ){	//If encoder is pressed and debouncing not enable
 		debouncing_en_sw = TRUE;	//Enable debouncing
-		temp_debouncing = debouncing;	//Set temporal variable to TRUE
+		temp_debouncing = debouncing;	//Load value from debouncing
 		en_sw_status = FALSE;			//SW status still disable waiting debouncing time
-	}else if ( ( !HAL_GPIO_ReadPin(EN_SW_GPIO_Port, EN_SW_Pin) ) && ( temp_debouncing+2 <= debouncing )){ //If encoder still pressed and debouncing +2 already passed
+	}else if ( ( !encoder_sw_read_value ) && ( temp_debouncing+2 <= debouncing )){ //If encoder still pressed and debouncing +2 already passed
 		en_sw_status = FALSE;	//Status still FALSE
-		debouncing_en_sw = FALSE;	//Disable debouncing
+		//debouncing_en_sw = FALSE;	//Disable debouncing
 		previous_en_sw_status = TRUE;	//Set previous status of enable TRUE
-	}else if( ( HAL_GPIO_ReadPin(EN_SW_GPIO_Port, EN_SW_Pin) ) && ( previous_en_sw_status ) ){
-		en_sw_status = TRUE;	//If button released then send status TRUE
+		if ( temp_debouncing+SW_HOLD_TIME <= debouncing ){	//If we keep the button pressed more than the time defines
+			en_sw_status = TRUE_HOLD;
+			previous_en_sw_status = TRUE_HOLD;
+		}
+	}else if( ( encoder_sw_read_value )){
+		if ( previous_en_sw_status == TRUE_HOLD ){	//If previous status was HOLD< do not report push
+			en_sw_status = FALSE;
+		}else if ( previous_en_sw_status == TRUE ){
+			en_sw_status = TRUE;	//If button released then send status TRUE
+			debouncing_en_sw = FALSE;	//Disable debouncing
+		}else{
+			en_sw_status = FALSE;
+			debouncing_en_sw = FALSE;	//Disable debouncing
+		}
 		previous_en_sw_status = FALSE;	//Reset variable of previous status
 	}else{
-		en_sw_status = FALSE;	//In case other condition, send FALSE
+		//en_sw_status = FALSE;	//In case other condition, send FALSE
 	}
 	return en_sw_status;
 }
