@@ -25,6 +25,8 @@
 #include "stdlib.h"
 #include "STM32_I2C_Display.h"
 #include "math.h"
+#include "ee.h"
+//#include "eeprom.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -67,6 +69,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
+
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim10;
@@ -97,12 +100,15 @@ int16_t target_feedrate = 200;			//Variable for the target feedrate
 int16_t display_feedrate = 200;			//Variable to display the target feedrate into the screen
 uint16_t sw_status = 0;					//Variable to storage the  sw status
 uint16_t encoder_sw_status = 0;			//Variable to storage the encoder sw status
+uint16_t aux_sw_status = 0;				//Variable to storage the aux sw status
 
 /* FLAGS*/
 uint16_t update_speed = 0;				//Flag to update the speed
 uint16_t lcd_update = 0;				//Flag to update the LCD content
 uint16_t debouncing_en_sw = 0;			//Flag for debouncing (Time select with time 10)
-uint16_t debouncing = 0;
+uint16_t debouncing_aux_sw = 0;			//Flag for aux debouncing (Time select with time 10)
+uint16_t debouncing = 0;				//Counter for debouncing
+uint16_t aux_debouncing = 0;			//Counter 2 for debouncing aux
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -127,6 +133,7 @@ void Update_Feedrate(int16_t *feedrate);
 int16_t Encoder_Switch_Status_Read(void);
 void Motor_Update_Feedrate(int16_t *current_feed, int16_t *target_feed);
 uint16_t Motor_Feedrate_Update(int16_t *current_feedrate, int16_t *target_feedrate);
+int16_t Aux_Switch_Status_Read(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -135,7 +142,7 @@ uint16_t Motor_Feedrate_Update(int16_t *current_feedrate, int16_t *target_feedra
 /* USER CODE END 0 */
 
 /**
-  * @brief  Electronic Leadscrew Feedrate
+  * @brief  The application entry point.
   * @retval int
   */
 int main(void)
@@ -168,6 +175,12 @@ int main(void)
   MX_TIM11_Init();
   MX_TIM10_Init();
   /* USER CODE BEGIN 2 */
+  ee_init();
+
+  //static uint8_t data_saved[4] = {1,2,3,4};
+  //ee_writeToRam(0, 4, data_saved);
+  //ee_commit();
+
   LiquidCrystal_I2C(0x4E, 20, 4);	//Initialization of LCD (Select your LCD address)
   lcdBegin();
   lcdSetCursor(2,1);
@@ -237,23 +250,25 @@ int main(void)
 	  		  break;
 	  	  case MOVE_RIGHT:	//Right state, movement to the RIGHT
 	  		  encoder_sw_status = Encoder_Switch_Status_Read();
+	  		  aux_sw_status = Aux_Switch_Status_Read();
 	  		  if ( encoder_sw_status == TRUE ){	//Check if the encoder is pressed to change the step mode
 	  			  if (step_mode == STEP_NORMAL){
 	  				  step_mode = STEP_x10;
 	  			  }else if(step_mode == STEP_x10){
 	  				  step_mode = STEP_NORMAL;
 	  			  }
-	  		  }else if ( encoder_sw_status == TRUE_HOLD ){
-	  			target_feedrate = FAST_MOVEMENT_FEEDRATE;
-	  		  }else if ( encoder_sw_status == FALSE ){
-	  			target_feedrate = display_feedrate;
+	  		  }
+	  		  if (  aux_sw_status == TRUE_HOLD ){
+		  		target_feedrate = FAST_MOVEMENT_FEEDRATE;
+	  		  }else if ( aux_sw_status == FALSE ){
+		  		target_feedrate = display_feedrate;
 	  		  }
 	  		  sw_status = Switch_Status_Read();		//Read the switch
 	  		  if ( sw_status == RIGHT ){			//If it is on right position, update the feedrate target comming from others modes
 	  			  if (target_feedrate == 0){
 	  				  target_feedrate = display_feedrate;
 	  			  }
-	  			  if (encoder_sw_status != TRUE_HOLD){
+	  			  if ( aux_sw_status != TRUE_HOLD ){
 					  Update_Feedrate(&target_feedrate);				//Update the feedrate from encoder
 					  if (display_feedrate != target_feedrate){			//Check if the feedrate changed to update LCD
 						  display_feedrate = target_feedrate;
@@ -296,23 +311,25 @@ int main(void)
 	  		  break;
 	  	  case MOVE_LEFT:
 	  		  encoder_sw_status = Encoder_Switch_Status_Read();
+	  		  aux_sw_status = Aux_Switch_Status_Read();
 	  		  if ( encoder_sw_status == TRUE ){	//Check if the encoder is pressed to change the step mode
 	  			  if (step_mode == STEP_NORMAL){
 	  				  step_mode = STEP_x10;
 	  			  }else if(step_mode == STEP_x10){
 	  				  step_mode = STEP_NORMAL;
 	  			  }
-	  		  }else if ( encoder_sw_status == TRUE_HOLD ){
-	  			target_feedrate = FAST_MOVEMENT_FEEDRATE;
-	  		  }else if ( encoder_sw_status == FALSE ){
-	  			target_feedrate = display_feedrate;
+	  		  }
+	  		  if (  aux_sw_status == TRUE_HOLD ){
+	  			  target_feedrate = FAST_MOVEMENT_FEEDRATE;
+	  		  }else if ( aux_sw_status == FALSE ){
+	  			  target_feedrate = display_feedrate;
 	  		  }
 	  		  sw_status = Switch_Status_Read();		//Read the switch
 	  		  if ( sw_status == LEFT ){				//If it is on left position, update the feedrate target comming from others modes
 	  			  if (target_feedrate == 0){
 	  				  target_feedrate = display_feedrate;
 	  			  }
-	  			  if (encoder_sw_status != TRUE_HOLD){
+	  			  if ( aux_sw_status != TRUE_HOLD ){
 					  Update_Feedrate(&target_feedrate);				//Update the feedrate from encoder
 					  if (display_feedrate != target_feedrate){			//Check if the feedrate changed to update LCD
 						  display_feedrate = target_feedrate;
@@ -547,6 +564,7 @@ static void MX_TIM2_Init(void)
   }
   /* USER CODE BEGIN TIM2_Init 2 */
 
+
   /* USER CODE END TIM2_Init 2 */
   HAL_TIM_MspPostInit(&htim2);
 
@@ -571,7 +589,7 @@ static void MX_TIM10_Init(void)
 
   /* USER CODE END TIM10_Init 1 */
   htim10.Instance = TIM10;
-  htim10.Init.Prescaler = 642;
+  htim10.Init.Prescaler = TIM10_preescaler;
   htim10.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim10.Init.Period = TIM10_ARR;
   htim10.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -595,11 +613,10 @@ static void MX_TIM11_Init(void)
 {
 
   /* USER CODE BEGIN TIM11_Init 0 */
-	float TIM11_period_ms = (float)ACC_UPDATE_RATIO/1000;		//Period to load into the timer, calculated from Define
-	uint16_t TIM11_preescaler = 642;							//Preescaler, max 1 second
-	uint16_t TIM11_ARR;
-	TIM11_ARR = ( (float) (CLK_FREQ_T2/(TIM11_preescaler+1))*TIM11_period_ms );	//Calculation value for ARR register to set correct period
-
+  float TIM11_period_ms = (float)ACC_UPDATE_RATIO/1000;		//Period to load into the timer, calculated from Define
+  uint16_t TIM11_preescaler = 642;							//Preescaler, max 1 second
+  uint16_t TIM11_ARR;
+  TIM11_ARR = ( (float) (CLK_FREQ_T2/(TIM11_preescaler+1))*TIM11_period_ms );	//Calculation value for ARR register to set correct period
   /* USER CODE END TIM11_Init 0 */
 
   /* USER CODE BEGIN TIM11_Init 1 */
@@ -645,8 +662,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : SW_LEFT_Pin SW_RIGHT_Pin EN_SW_Pin */
-  GPIO_InitStruct.Pin = SW_LEFT_Pin|SW_RIGHT_Pin|EN_SW_Pin;
+  /*Configure GPIO pins : SW_LEFT_Pin SW_RIGHT_Pin SEC_SW_Pin EN_SW_Pin */
+  GPIO_InitStruct.Pin = SW_LEFT_Pin|SW_RIGHT_Pin|SEC_SW_Pin|EN_SW_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -660,10 +677,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	if (htim == &htim11 ){		//Checking if the IRQ is from Timer11 Acceleration
 		update_speed = 1;
 	}else if ( htim == &htim10 ){	//Checking if the IRQ is from Timer10 Debouncing
+		//Debouncing for encoder switch
 		if (debouncing_en_sw){		//If debouncing enable, increment counter
 			debouncing = debouncing + 1;
 		}else if (!debouncing_en_sw){	//If debouncing disable reset counter
 			debouncing = 0;
+		}
+		//Debouncing for auxiliary switch
+		if (debouncing_aux_sw){		//If debouncing enable, increment counter
+			aux_debouncing = aux_debouncing + 1;
+		}else if (!debouncing_aux_sw){	//If debouncing disable reset counter
+			aux_debouncing = 0;
 		}
 	}
 }
@@ -986,6 +1010,48 @@ void Motor_Update_Feedrate(int16_t *current_feed, int16_t *target_feed){
 	new_current_rpm_val = Motor_Speed_Update(&current_rpm_val,&target_rpm_val);	//Update motor speed RPM
 	Motor_Speed_RPM(new_current_rpm_val);	//Set the speed in the Motor
 	*current_feed = new_current_rpm_val*leadscrew_pitch;	//Re update the feedrate from new RPM updated value
+}
+
+/**
+  * @brief Function to read the value for auxiliary switch
+  * @param	- NONE
+  * @retval	- Aux Switch Status TRUE, FALSE or TRUE_HOLD
+  */
+int16_t Aux_Switch_Status_Read(void){
+	static uint16_t aux_temp_debouncing = 0;	//Temporal variable to storage the debouncing
+	static uint16_t previous_aux_sw_status;	//Variable to storage the previous status of the encoder switch
+	uint16_t aux_sw_status;
+	uint16_t aux_sw_read_value;
+
+	aux_sw_read_value = HAL_GPIO_ReadPin(SEC_SW_GPIO_Port, SEC_SW_Pin);
+
+	if ( ( !aux_sw_read_value ) && ( !debouncing_aux_sw ) ){	//If encoder is pressed and debouncing not enable
+		debouncing_aux_sw = TRUE;	//Enable debouncing
+		aux_temp_debouncing = aux_debouncing;	//Load value from debouncing
+		aux_sw_status = FALSE;			//SW status still disable waiting debouncing time
+	}else if ( ( !aux_sw_read_value ) && ( aux_temp_debouncing+2 <= aux_debouncing )){ //If encoder still pressed and debouncing +2 already passed
+		aux_sw_status = FALSE;	//Status still FALSE
+		//debouncing_aux_sw = FALSE;	//Disable debouncing
+		previous_aux_sw_status = TRUE;	//Set previous status of enable TRUE
+		if ( aux_temp_debouncing+SW_HOLD_TIME <= aux_debouncing ){	//If we keep the button pressed more than the time defines
+			aux_sw_status = TRUE_HOLD;
+			previous_aux_sw_status = TRUE_HOLD;
+		}
+	}else if( ( aux_sw_read_value )){
+		if ( previous_aux_sw_status == TRUE_HOLD ){	//If previous status was HOLD< do not report push
+			aux_sw_status = FALSE;
+		}else if ( previous_aux_sw_status == TRUE ){
+			aux_sw_status = TRUE;	//If button released then send status TRUE
+			debouncing_aux_sw = FALSE;	//Disable debouncing
+		}else{
+			aux_sw_status = FALSE;
+			debouncing_aux_sw = FALSE;	//Disable debouncing
+		}
+		previous_aux_sw_status = FALSE;	//Reset variable of previous status
+	}else{
+		//aux_sw_status = FALSE;	//In case other condition, send FALSE
+	}
+	return aux_sw_status;
 }
 
 /* USER CODE END 4 */

@@ -69,6 +69,8 @@ void Error_Handler(void);
 #define SW_LEFT_GPIO_Port GPIOB
 #define SW_RIGHT_Pin GPIO_PIN_13
 #define SW_RIGHT_GPIO_Port GPIOB
+#define SEC_SW_Pin GPIO_PIN_14
+#define SEC_SW_GPIO_Port GPIOB
 #define EN_SW_Pin GPIO_PIN_15
 #define EN_SW_GPIO_Port GPIOB
 #define EN_A_Pin GPIO_PIN_8
