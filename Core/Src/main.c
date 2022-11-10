@@ -47,15 +47,28 @@
 #define ACC_UPDATE_RATIO 50			//RAtio for Acceleration update in ms (MAX 1 Second)
 #define ACC_TIME 1000				//Acceleration time in ms
 #define DEBOUNCING_TIME 100			//TIme for checking debouncing FLAG in ms (MAX 1 Second)
+#define TIMER9_PERIOD 100			//TIme for TIMER9 period FLAG in ms (MAX 1 Second)
 #define	SW_HOLD_TIME 10				//Multiplier x100 to obtain the time we want to keep the button pressed to being hold pressing
 #define HIGH_SPEED_INCREMENT 10		//Increment where Target speed if higher than min speed gap
 #define LOW_SPEED_INCREMENT 1		//Increment where Target speed if higher than min speed gap
 #define MIN_SPEED_GAP 30			//Difference between target and current speed to use HIGH_SPEED_INCREMENT
+#define MAX_MOTOR_STEPREV 15000		//Max step/rev for the motor
+#define MAX_LEADSCREWPITCH	10		//Mas value for leadscrew pitch
+#define CHAR_BUFF_SIZE 4
+#define MAX_FAST_MOVEMENT_FEEDRATE 700	//Maximum feedrate for fas movement
+#define MAX_LIMIT_FEEDRATE	700			//Value as limit for feedrate
+#define MIN_ACCELERATION_TIME 1000		//Value for the minimum acceleration time
+#define MAX_ACCELERATION_TIME 5000		//Value for the maximum acceleration time
+#define MIN_ACC_UPDATE_RATIO 20			//Value for the minimum update acceleration ratio
+#define MAX_ACC_UPDATE_RATIO 300		//Value for the maximum update acceleration ratio
+
+
 /*Defines for State Machine*/
 #define INITIALIZATION	 0			//Initialization state
 #define STANDBY			 3			//Standby State no Movement
 #define MOVE_RIGHT		 1			//Move right state
 #define MOVE_LEFT		 2			//Move left state
+#define CONFIGURATION	 4			//Configuration Mode
 
 #define STEP_NORMAL 0				//Define to select STEP NORMAL
 #define STEP_x10 	1				//Define to select step mode x10
@@ -72,17 +85,19 @@ I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim9;
 TIM_HandleTypeDef htim10;
 TIM_HandleTypeDef htim11;
 
 /* USER CODE BEGIN PV */
 /*Variables for Encoder Read*/
-int32_t encoder_value = 0x7FFF;			//Current Encoder Value
+int32_t current_encoder_value = 0x7FFF;			//Current Encoder Value
 int32_t old_encoder_value = 0x7FFF;		//Previous Encoder Value
 
 /*State Machine variables*/
 uint16_t state = INITIALIZATION;				//Variable for the main state machine
 uint16_t previous_state = INITIALIZATION;		//Variable for the previous state machine
+uint16_t configuration_status = 0;				//Variable for the configuration Menu
 
 uint16_t step_mode = STEP_NORMAL;		//Select mode of increase steps
 
@@ -94,6 +109,26 @@ float leadscrew_pitch = 2;				//Variable to storage the pitch for the leadscrew 
 uint16_t MAX_FEEDRATE = 500;			//Maximum Feedrate on mm/min
 uint16_t FAST_MOVEMENT_FEEDRATE = 500;	//Variable to storage the fast movement feedrate when holding fast move buton.
 
+//Structure to storage and load the parameters
+typedef struct
+{
+     uint16_t en_invert_1;
+     uint16_t dir_invert_1;
+     uint16_t motor_stepsrev_1;
+     float leadscrew_pitch_1;
+     uint16_t MAX_FEEDRATE_1;
+     uint16_t FAST_MOVEMENT_FEEDRATE_1;
+     uint16_t ACC_TIME_1;
+     uint16_t ACC_UPDATE_RATIO_1;
+     uint16_t initial_feedrate_1;
+     uint16_t first_load;
+}__attribute__((packed, aligned(1))) str_parameters;
+
+str_parameters parameter;
+str_parameters default_parameter;
+str_parameters *struct_ptr;
+str_parameters *default_struct_ptr;
+
 /*General variables*/
 int16_t current_feedrate = 0;			//Variable for the current feedrate
 int16_t target_feedrate = 200;			//Variable for the target feedrate
@@ -101,6 +136,10 @@ int16_t display_feedrate = 200;			//Variable to display the target feedrate into
 uint16_t sw_status = 0;					//Variable to storage the  sw status
 uint16_t encoder_sw_status = 0;			//Variable to storage the encoder sw status
 uint16_t aux_sw_status = 0;				//Variable to storage the aux sw status
+uint32_t delay100ms_counter = 0;		//Variable for delay counter 1 = 100ms
+uint32_t old_delay100ms_counter = 0;	//Variable to storage the previous delay_counter
+char float2char[4];						//Variable to convert float to char
+uint16_t save_bool = FALSE;				//Variable to save or not the parameters after config
 
 /* FLAGS*/
 uint16_t update_speed = 0;				//Flag to update the speed
@@ -119,7 +158,9 @@ static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM11_Init(void);
 static void MX_TIM10_Init(void);
+static void MX_TIM9_Init(void);
 /* USER CODE BEGIN PFP */
+
 int32_t Encoder_Read(void);
 void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t row_pos);
 void Motor_Enable(uint16_t invert);
@@ -134,6 +175,12 @@ int16_t Encoder_Switch_Status_Read(void);
 void Motor_Update_Feedrate(int16_t *current_feed, int16_t *target_feed);
 uint16_t Motor_Feedrate_Update(int16_t *current_feedrate, int16_t *target_feedrate);
 int16_t Aux_Switch_Status_Read(void);
+void LCD_Write_Float_Number(float value, int32_t col_pos, int32_t row_pos);
+static char * _float_to_char(float x, char *p);
+void LCD_Write_Float_Number(float float_char, int32_t col_pos_float, int32_t row_pos_float);
+uint16_t Save_Parameter_Data(str_parameters*);
+uint16_t Read_Parameter_Data(str_parameters*);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -148,7 +195,28 @@ int16_t Aux_Switch_Status_Read(void);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
+	//Initialization Struct
+	parameter.en_invert_1 = 0;
+	parameter.dir_invert_1 = 0;
+	parameter.motor_stepsrev_1 = 0;
+	parameter.leadscrew_pitch_1 = 0;
+	parameter.MAX_FEEDRATE_1 = 0;
+	parameter.FAST_MOVEMENT_FEEDRATE_1 = 0;
+	parameter.ACC_TIME_1 = 0;
+	parameter.ACC_UPDATE_RATIO_1 = 0;
+	parameter.initial_feedrate_1 = 0;
+	parameter.first_load = 0;
+	//Default values for parameters
+	default_parameter.en_invert_1 = 0;
+	default_parameter.dir_invert_1 = 0;
+	default_parameter.motor_stepsrev_1 = 1600;
+	default_parameter.leadscrew_pitch_1 = 2;
+	default_parameter.MAX_FEEDRATE_1 = 500;
+	default_parameter.FAST_MOVEMENT_FEEDRATE_1 = 500;
+	default_parameter.ACC_TIME_1 = 1000;
+	default_parameter.ACC_UPDATE_RATIO_1 = 50;
+	default_parameter.initial_feedrate_1 = 50;
+	default_parameter.first_load = 0;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -174,6 +242,7 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM11_Init();
   MX_TIM10_Init();
+  MX_TIM9_Init();
   /* USER CODE BEGIN 2 */
   ee_init();
 
@@ -185,8 +254,7 @@ int main(void)
   lcdBegin();
   lcdSetCursor(2,1);
   lcdPrint("Power Feed V2.0");
-  HAL_Delay(2000);
-  lcdClear();
+  //HAL_Delay(2000);
   lcd_update = FALSE;				//LCD has been updated
 
   /* Encoder Initialization */
@@ -194,10 +262,45 @@ int main(void)
   /* Initialization Timers */
   HAL_TIM_Base_Start_IT(&htim11);	//Timer for debouncing
   HAL_TIM_Base_Start_IT(&htim10);	//Timer for acceleration update
+  HAL_TIM_Base_Start_IT(&htim9);	//Timer for general 100ms counter
+
+  struct_ptr = &parameter;
+  default_struct_ptr = &default_parameter;
+
+  if (!Read_Parameter_Data(struct_ptr)){
+	  lcdSetCursor(1,1);
+	  lcdPrint("ERROR LOADING DATA");
+	  lcdSetCursor(1,2);
+	  lcdPrint("LOADING DEFAULT");
+	  *struct_ptr = *default_struct_ptr;
+	  HAL_Delay(2000);
+	  lcdClear();
+  }
+  if (parameter.first_load != 0){
+	  parameter.first_load = 0;
+	  *struct_ptr = *default_struct_ptr;
+	  Save_Parameter_Data(struct_ptr);
+  }
+  old_delay100ms_counter = delay100ms_counter; //Update delay counter
+  while(old_delay100ms_counter+30 >= delay100ms_counter){
+	  if (Encoder_Switch_Status_Read() == TRUE_HOLD){
+		  state = CONFIGURATION;
+		  lcd_update=TRUE;
+	  }else{
+		  state = INITIALIZATION;
+	  }
+  }
+  lcdClear();
+
+//Read_Parameter_Data(struct_ptr);
+
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+
+
 
   while (1)
   {
@@ -215,6 +318,8 @@ int main(void)
 				  lcdPrint("Feed Rate:");
 				  lcdSetCursor(0,1);
 				  lcdPrint("Mode: STOP ");
+		  		  target_feedrate = parameter.initial_feedrate_1;
+		  		  display_feedrate = target_feedrate;
 				  LCD_Write_Feedrate(display_feedrate, 11, 0);	//Print the default speed
 				  state = STANDBY;								//Go to standby
 	  		  }
@@ -309,7 +414,7 @@ int main(void)
 				  update_speed = 0;					//Reset the update_speed flag
 	  		  }
 	  		  break;
-	  	  case MOVE_LEFT:
+	  	  case MOVE_LEFT:	//Left state, movement to the Left
 	  		  encoder_sw_status = Encoder_Switch_Status_Read();
 	  		  aux_sw_status = Aux_Switch_Status_Read();
 	  		  if ( encoder_sw_status == TRUE ){	//Check if the encoder is pressed to change the step mode
@@ -370,6 +475,341 @@ int main(void)
 				  update_speed = 0;					//Reset the update_speed flag
 	  		  }
 	  		  break;
+	  	  case CONFIGURATION:	//State for Configuration Menu
+	  		  switch (configuration_status)
+	  		  {
+				  case 0:	//Enable PIN configuration
+					  if (lcd_update){	//Check if is needed to update LCD
+						  old_encoder_value += Encoder_Read();	//Update Encoder Value
+						  lcdClear();
+						  lcdSetCursor(3, 0);
+						  lcdPrint("CONFIGURATION");
+						  lcdSetCursor(0, 1);
+						  lcdPrint("Enable Pin Inverted:");
+						  if ( parameter.en_invert_1 == FALSE){		//If parameter is FALSE Print not inverted
+							lcdSetCursor(0, 2);
+							lcdPrint("NON_INVERTED");
+						  }else{									//If parameter is TRUE Print inverted
+							lcdSetCursor(0, 2);
+							lcdPrint("INVERTED    ");
+						  }
+						lcd_update = FALSE;	//Reset LCD Update flag
+					  }
+					  current_encoder_value += Encoder_Read();		//Check if encoder changed
+					  if ( current_encoder_value != old_encoder_value){	//If changed, change the value
+						  old_encoder_value = current_encoder_value;	//Update Encoder variable
+						  if (!parameter.en_invert_1){					//Change the value
+							lcdSetCursor(0, 2);
+							lcdPrint("INVERTED    ");
+							parameter.en_invert_1 = TRUE;
+						  }else{
+							lcdSetCursor(0, 2);
+							lcdPrint("NOT_INVERTED");
+							parameter.en_invert_1 = FALSE;
+						  }
+					  }
+					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
+						configuration_status += 1;
+						lcd_update = TRUE;
+					  }
+					  break;
+				  case 1:	//Dir PIN configuration
+					  if (lcd_update){
+						  old_encoder_value += Encoder_Read();	//Update Encoder Value
+						  lcdClear();
+						  lcdSetCursor(3, 0);
+						  lcdPrint("CONFIGURATION");
+						  lcdSetCursor(0, 1);
+						  lcdPrint("Dir Pin Inverted:");
+						  if ( parameter.dir_invert_1 == FALSE){	//If parameter is FALSE Print not inverted
+							lcdSetCursor(0, 2);
+							lcdPrint("NON_INVERTED");
+						  }else{									//If parameter is TRUE Print inverted
+							lcdSetCursor(0, 2);
+							lcdPrint("INVERTED    ");
+						  }
+						lcd_update = FALSE;
+					  }
+					  current_encoder_value += Encoder_Read();		//Check if encoder changed
+					  if ( current_encoder_value != old_encoder_value){	//If changed, change the value
+						  old_encoder_value = current_encoder_value;	//Update Encoder variable
+						  if (!parameter.dir_invert_1){					//Change the value
+							lcdSetCursor(0, 2);
+							lcdPrint("INVERTED    ");
+							parameter.dir_invert_1 = TRUE;
+						  }else{
+							lcdSetCursor(0, 2);
+							lcdPrint("NOT_INVERTED");
+							parameter.dir_invert_1 = FALSE;
+						  }
+					  }
+					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
+						configuration_status += 1;
+						lcd_update = TRUE;
+					  }
+					  break;
+				  case 2:
+					  if (lcd_update){
+						  old_encoder_value += Encoder_Read();	//Update Encoder Value
+						  lcdClear();
+						  lcdSetCursor(3, 0);
+						  lcdPrint("CONFIGURATION");
+						  lcdSetCursor(0, 1);
+						  lcdPrint("Motor Steps per Rev:");
+						  LCD_Write_Number(parameter.motor_stepsrev_1, 0, 2);
+						  lcdSetCursor(8, 2);
+						  lcdPrint("(pulse/rev)");
+						  lcd_update = FALSE;
+					  }
+					  current_encoder_value += Encoder_Read();		//Check if encoder changed
+					  if ( current_encoder_value != old_encoder_value){	//If changed, change the value
+						  parameter.motor_stepsrev_1 = parameter.motor_stepsrev_1 + ( 100*(current_encoder_value - old_encoder_value) );
+						  old_encoder_value = current_encoder_value;	//Update Encoder variable
+						  if ( parameter.motor_stepsrev_1 < 100 || ( parameter.motor_stepsrev_1 >= (MAX_MOTOR_STEPREV + 20000) )){
+							  parameter.motor_stepsrev_1 = 100;
+						  }else if ( parameter.motor_stepsrev_1 > MAX_MOTOR_STEPREV){
+							  parameter.motor_stepsrev_1 = MAX_MOTOR_STEPREV;
+						  }
+						  LCD_Write_Number(parameter.motor_stepsrev_1, 0, 2);
+					  }
+					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
+						configuration_status += 1;
+						lcd_update = TRUE;
+					  }
+					  break;
+				  case 3:
+					  if (lcd_update){
+						  old_encoder_value += Encoder_Read();	//Update Encoder Value
+						  lcdClear();
+						  lcdSetCursor(3, 0);
+						  lcdPrint("CONFIGURATION");
+						  lcdSetCursor(0, 1);
+						  lcdPrint("Leadscrew Pitch:");
+						  LCD_Write_Float_Number(parameter.leadscrew_pitch_1,0,2);
+						  lcdSetCursor(10, 2);
+						  lcdPrint("(mm/rev)");
+						  lcd_update = FALSE;
+					  }
+					  current_encoder_value += Encoder_Read();		//Check if encoder changed
+					  if ( current_encoder_value != old_encoder_value){	//If changed, change the value
+						  parameter.leadscrew_pitch_1 = parameter.leadscrew_pitch_1 + (float)( 0.01*(current_encoder_value - old_encoder_value) );
+						  old_encoder_value = current_encoder_value;	//Update Encoder variable
+						  if ( parameter.leadscrew_pitch_1 < 0.01){
+							  parameter.leadscrew_pitch_1 = 0.01;
+						  }else if ( parameter.leadscrew_pitch_1 > MAX_LEADSCREWPITCH){
+							  parameter.leadscrew_pitch_1 = MAX_LEADSCREWPITCH;
+						  }
+						  LCD_Write_Float_Number(parameter.leadscrew_pitch_1,0,2);
+					  }
+					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
+						configuration_status += 1;
+						lcd_update = TRUE;
+					  }
+					  break;
+				  case 4:
+					  if (lcd_update){
+						  old_encoder_value += Encoder_Read();	//Update Encoder Value
+						  lcdClear();
+						  lcdSetCursor(3, 0);
+						  lcdPrint("CONFIGURATION");
+						  lcdSetCursor(0, 1);
+						  lcdPrint("Maximum Feedrate:");
+						  LCD_Write_Number(parameter.MAX_FEEDRATE_1, 0, 2);
+						  lcdSetCursor(10, 2);
+						  lcdPrint("(mm/min)");
+						  lcd_update = FALSE;
+					  }
+					  current_encoder_value += Encoder_Read();		//Check if encoder changed
+					  if ( current_encoder_value != old_encoder_value){	//If changed, change the value
+						  parameter.MAX_FEEDRATE_1 = parameter.MAX_FEEDRATE_1 + ( 50*(current_encoder_value - old_encoder_value) );
+						  old_encoder_value = current_encoder_value;	//Update Encoder variable
+						  if ( parameter.MAX_FEEDRATE_1 < 100 || ( parameter.MAX_FEEDRATE_1 >= (MAX_LIMIT_FEEDRATE + 20000) ) ){
+							  parameter.MAX_FEEDRATE_1 = 100;
+						  }else if ( parameter.MAX_FEEDRATE_1 > MAX_LIMIT_FEEDRATE){
+							  parameter.MAX_FEEDRATE_1 = MAX_LIMIT_FEEDRATE;
+						  }
+						  LCD_Write_Number(parameter.MAX_FEEDRATE_1, 0, 2);
+					  }
+					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
+						configuration_status += 1;
+						lcd_update = TRUE;
+					  }
+					  break;
+				  case 5:
+					  if (lcd_update){
+						  old_encoder_value += Encoder_Read();	//Update Encoder Value
+						  lcdClear();
+						  lcdSetCursor(3, 0);
+						  lcdPrint("CONFIGURATION");
+						  lcdSetCursor(0, 1);
+						  lcdPrint("Fast Mov Feedrate:");
+						  LCD_Write_Number(parameter.FAST_MOVEMENT_FEEDRATE_1, 0, 2);
+						  lcdSetCursor(10, 2);
+						  lcdPrint("(mm/min)");
+						  lcd_update = FALSE;
+					  }
+					  current_encoder_value += Encoder_Read();		//Check if encoder changed
+					  if ( current_encoder_value != old_encoder_value){	//If changed, change the value
+						  parameter.FAST_MOVEMENT_FEEDRATE_1 = parameter.FAST_MOVEMENT_FEEDRATE_1 + ( 50*(current_encoder_value - old_encoder_value) );
+						  old_encoder_value = current_encoder_value;	//Update Encoder variable
+						  if ( parameter.FAST_MOVEMENT_FEEDRATE_1 < 50 || ( parameter.FAST_MOVEMENT_FEEDRATE_1 >= (MAX_FAST_MOVEMENT_FEEDRATE + 20000) )){
+							  parameter.FAST_MOVEMENT_FEEDRATE_1 = 50;
+						  }else if ( parameter.FAST_MOVEMENT_FEEDRATE_1 > MAX_FAST_MOVEMENT_FEEDRATE){
+							  parameter.FAST_MOVEMENT_FEEDRATE_1 = MAX_FAST_MOVEMENT_FEEDRATE;
+						  }
+						  LCD_Write_Number(parameter.FAST_MOVEMENT_FEEDRATE_1, 0, 2);
+					  }
+					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
+						configuration_status += 1;
+						lcd_update = TRUE;
+					  }
+					  break;
+				  case 6:
+					  if (lcd_update){
+						  old_encoder_value += Encoder_Read();	//Update Encoder Value
+						  lcdClear();
+						  lcdSetCursor(3, 0);
+						  lcdPrint("CONFIGURATION");
+						  lcdSetCursor(0, 1);
+						  lcdPrint("Initial Feedrate:");
+						  LCD_Write_Number(parameter.initial_feedrate_1, 0, 2);
+						  lcdSetCursor(10, 2);
+						  lcdPrint("(mm/min)");
+						  lcd_update = FALSE;
+					  }
+					  current_encoder_value += Encoder_Read();		//Check if encoder changed
+					  if ( current_encoder_value != old_encoder_value){	//If changed, change the value
+						  parameter.initial_feedrate_1 = parameter.initial_feedrate_1 + ( 10*(current_encoder_value - old_encoder_value) );
+						  old_encoder_value = current_encoder_value;	//Update Encoder variable
+						  if ( parameter.initial_feedrate_1 < 10 || ( parameter.initial_feedrate_1 >= (parameter.MAX_FEEDRATE_1 + 20000) )){
+							  parameter.initial_feedrate_1 = 10;
+						  }else if ( parameter.initial_feedrate_1 > parameter.MAX_FEEDRATE_1){
+							  parameter.initial_feedrate_1 = parameter.MAX_FEEDRATE_1;
+						  }
+						  LCD_Write_Number(parameter.initial_feedrate_1, 0, 2);
+					  }
+					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
+						configuration_status += 1;
+						lcd_update = TRUE;
+					  }
+					  break;
+				  case 7:
+					  if (lcd_update){
+						  old_encoder_value += Encoder_Read();	//Update Encoder Value
+						  lcdClear();
+						  lcdSetCursor(3, 0);
+						  lcdPrint("CONFIGURATION");
+						  lcdSetCursor(0, 1);
+						  lcdPrint("Acc Time:");
+						  LCD_Write_Number(parameter.ACC_TIME_1, 0, 2);
+						  lcdSetCursor(10, 2);
+						  lcdPrint("(ms)");
+						  lcd_update = FALSE;
+					  }
+					  current_encoder_value += Encoder_Read();		//Check if encoder changed
+					  if ( current_encoder_value != old_encoder_value){	//If changed, change the value
+						  parameter.ACC_TIME_1 = parameter.ACC_TIME_1 + ( 100*(current_encoder_value - old_encoder_value) );
+						  old_encoder_value = current_encoder_value;	//Update Encoder variable
+						  if ( ( parameter.ACC_TIME_1 < MIN_ACCELERATION_TIME ) || ( parameter.ACC_TIME_1 >= (MAX_ACCELERATION_TIME + 20000) )){
+							  parameter.ACC_TIME_1 = MIN_ACCELERATION_TIME;
+						  }else if ( parameter.ACC_TIME_1 > MAX_ACCELERATION_TIME){
+							  parameter.ACC_TIME_1 = MAX_ACCELERATION_TIME;
+						  }
+						  LCD_Write_Number(parameter.ACC_TIME_1, 0, 2);
+					  }
+					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
+						configuration_status += 1;
+						lcd_update = TRUE;
+					  }
+					  break;
+				  case 8:
+					  if (lcd_update){
+						  old_encoder_value += Encoder_Read();	//Update Encoder Value
+						  lcdClear();
+						  lcdSetCursor(3, 0);
+						  lcdPrint("CONFIGURATION");
+						  lcdSetCursor(0, 1);
+						  lcdPrint("Acc Update Ratio:");
+						  LCD_Write_Number(parameter.ACC_UPDATE_RATIO_1, 0, 2);
+						  lcdSetCursor(10, 2);
+						  lcdPrint("(ms)");
+						  lcd_update = FALSE;
+					  }
+					  current_encoder_value += Encoder_Read();		//Check if encoder changed
+					  if ( current_encoder_value != old_encoder_value){	//If changed, change the value
+						  parameter.ACC_UPDATE_RATIO_1 = parameter.ACC_UPDATE_RATIO_1 + ( 10*(current_encoder_value - old_encoder_value) );
+						  old_encoder_value = current_encoder_value;	//Update Encoder variable
+						  if ( ( parameter.ACC_UPDATE_RATIO_1 < MIN_ACC_UPDATE_RATIO ) || ( parameter.ACC_UPDATE_RATIO_1 >= (MAX_ACC_UPDATE_RATIO + 20000) )){
+							  parameter.ACC_UPDATE_RATIO_1 = MIN_ACC_UPDATE_RATIO;
+						  }else if ( parameter.ACC_UPDATE_RATIO_1 > MAX_ACC_UPDATE_RATIO){
+							  parameter.ACC_UPDATE_RATIO_1 = MAX_ACC_UPDATE_RATIO;
+						  }
+						  LCD_Write_Number(parameter.ACC_UPDATE_RATIO_1, 0, 2);
+					  }
+					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
+						configuration_status += 1;
+						lcd_update = TRUE;
+					  }
+					  break;
+				  case 9:
+					  if (lcd_update){
+						  old_encoder_value += Encoder_Read();	//Update Encoder Value
+						  lcdClear();
+						  lcdSetCursor(3, 0);
+						  lcdPrint("CONFIGURATION");
+						  lcdSetCursor(0, 1);
+						  lcdPrint("Save Configuration");
+						  if ( save_bool == FALSE){		//If parameter is FALSE Print not inverted
+							lcdSetCursor(0, 2);
+							lcdPrint("EXIT WITHOUT SAVE");
+						  }else{									//If parameter is TRUE Print inverted
+							lcdSetCursor(0, 2);
+							lcdPrint("SAVE PARAMETERS  ");
+						  }
+						  lcd_update = FALSE;
+					  }
+					  current_encoder_value += Encoder_Read();		//Check if encoder changed
+					  if ( current_encoder_value != old_encoder_value){	//If changed, change the value
+						  old_encoder_value = current_encoder_value;	//Update Encoder variable
+						  if (save_bool){					//Change the value
+							lcdSetCursor(0, 2);
+							lcdPrint("EXIT WITHOUT SAVE");
+							save_bool = FALSE;
+						  }else{
+							lcdSetCursor(0, 2);
+							lcdPrint("SAVE PARAMETERS  ");
+							save_bool = TRUE;
+						  }
+					  }
+					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
+						configuration_status += 1;
+						lcd_update = TRUE;
+					  }
+					  break;
+				  case 10:
+					  if (save_bool == TRUE){
+						  if (Save_Parameter_Data(struct_ptr)){
+							  lcdClear();
+							  lcdSetCursor(5,1);
+							  lcdPrint("DATA SAVED");
+							  HAL_Delay(1500);
+						  }else{
+							  lcdClear();
+							  lcdSetCursor(0,1);
+							  lcdPrint("ERROR DEFAULT VALUES");
+							  lcdSetCursor(7,2);
+							  lcdPrint("LOADED");
+							  HAL_Delay(1500);
+						  }
+					  }else{
+						  lcdClear();
+						  lcdSetCursor(2, 1);
+						  lcdPrint("DATA NOT SAVED");
+						  HAL_Delay(1500);
+					  }
+					  state = INITIALIZATION;
+					  break;
+				  }
 	  }
   }
 
@@ -571,6 +1011,47 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief TIM9 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM9_Init(void)
+{
+
+  /* USER CODE BEGIN TIM9_Init 0 */
+	float TIM9_period_ms = (float)TIMER9_PERIOD/1000;		//Period to load into the timer, calculated from Define
+	uint16_t TIM9_preescaler = 642;							//Preescaler, max 1 second
+	uint16_t TIM9_ARR;
+	TIM9_ARR = ( (float) (CLK_FREQ_T2/(TIM9_preescaler+1))*TIM9_period_ms );	//Calculation value for ARR register to set correct period
+  /* USER CODE END TIM9_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+
+  /* USER CODE BEGIN TIM9_Init 1 */
+
+  /* USER CODE END TIM9_Init 1 */
+  htim9.Instance = TIM9;
+  htim9.Init.Prescaler = TIM9_preescaler;
+  htim9.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim9.Init.Period = TIM9_ARR;
+  htim9.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim9.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim9) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim9, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM9_Init 2 */
+
+  /* USER CODE END TIM9_Init 2 */
+
+}
+
+/**
   * @brief TIM10 Initialization Function
   * @param None
   * @retval None
@@ -689,6 +1170,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		}else if (!debouncing_aux_sw){	//If debouncing disable reset counter
 			aux_debouncing = 0;
 		}
+	}else if( htim == &htim9 ){
+		delay100ms_counter += 1;
 	}
 }
 
@@ -747,6 +1230,16 @@ void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t row_pos)
 			lcdPrint(" ");
 			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
+		}else if (value < 10000){	//If value is lower than 10000
+			lcdSetCursor(col_pos+4,row_pos);
+			lcdPrint(" ");
+			lcdSetCursor(col_pos,row_pos);
+			lcdPrint(str);
+		}else if (value < 100000){	//If value is lower than 100000
+			lcdSetCursor(col_pos+5,row_pos);
+			lcdPrint(" ");
+			lcdSetCursor(col_pos,row_pos);
+			lcdPrint(str);
 		}
 	}else if (value < 0) {			//If value is negative
 		if (value > -10){			//If value is higher than -10
@@ -772,6 +1265,62 @@ void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t row_pos)
 		lcdPrint("0");
 	}
 }
+
+/**
+  * @brief Function to convert float number to char
+  * @param 	x - float value which expected to be converted
+  * 		p - char used for the conversion
+  * @retval Pointer to the char in which the value will be loaded
+  */
+static char * _float_to_char(float x, char *p) {
+    char *s = p + CHAR_BUFF_SIZE; // go to end of buffer
+    uint16_t decimals;  // variable to store the decimals
+    int units;  // variable to store the units (part to left of decimal place)
+    if (x < 0) { // take care of negative numbers
+        decimals = (int)(x * -100) % 100; // make 1000 for 3 decimals etc.
+        units = (int)(-1 * x);
+    } else { // positive numbers
+        decimals = (int)(x * 100) % 100;
+        units = (int)x;
+    }
+
+    *--s = (decimals % 10) + '0';
+    decimals /= 10; // repeat for as many decimal places as you need
+    *--s = (decimals % 10) + '0';
+    *--s = '.';
+
+    while (units > 0) {
+        *--s = (units % 10) + '0';
+        units /= 10;
+    }
+    if (x < 0) *--s = '-'; // unary minus sign for negative numbers
+    return s;
+}
+
+/**
+  * @brief Function to write float number on the LCD
+  * @param 	float_char - char expected to be writen
+  * 		col_pos - column position for the number
+  * 		row_pos - raw position for the number
+  * @retval
+  */
+void LCD_Write_Float_Number(float float_char, int32_t col_pos_float, int32_t row_pos_float){
+	char float2char[CHAR_BUFF_SIZE+1];
+	float2char[CHAR_BUFF_SIZE] = '\0';
+	char float1[4];						//Initualization array to save the output
+	char *ptr = float1;
+	if (float_char < 1 ){				//If float is lower than 1 print an extra 0 on the left
+		lcdSetCursor(col_pos_float, row_pos_float);
+		lcdPrint("0");
+		ptr = _float_to_char(float_char,&float2char[0]);
+		lcdPrint(ptr);
+	}else{
+		ptr = _float_to_char(float_char,&float2char[0]);
+		lcdSetCursor(col_pos_float, row_pos_float);
+		lcdPrint(ptr);
+	}
+}
+
 
 /**
   * @brief Function to Enable EN signal for Motor Driver
@@ -1052,6 +1601,54 @@ int16_t Aux_Switch_Status_Read(void){
 		//aux_sw_status = FALSE;	//In case other condition, send FALSE
 	}
 	return aux_sw_status;
+}
+
+/**
+  * @brief Function to save the data into flash (EEPROM Emulation)
+  * @param	- Pointer to the struct to be saved
+  * @retval
+  */
+uint16_t Save_Parameter_Data(str_parameters *struct_ptr){
+	  union save_union   //Union to copy the data from Structure and separate values on bytes
+	  {
+	    str_parameters temp;
+	    uint8_t bytes[sizeof(*struct_ptr)];
+	  }save_union_par;
+
+	  save_union_par.temp = *struct_ptr; //Copy values from value struct to uniun
+
+	  for (uint8_t i=0; i<sizeof(*struct_ptr); i++)  //Transfers values to Union
+	  {
+	    ee_writeToRam(i, 1, &save_union_par.bytes[i]);
+	  }
+	  return ee_commit();
+}
+
+/**
+  * @brief Function to read the data from flash (EEPROM Emulation)
+  * @param	- Pointer to the struct in which the data needs to be loaded
+  * @retval
+  */
+uint16_t Read_Parameter_Data(str_parameters *struct_ptr){
+	union save_union   //Union to copy the data from Structure and separate values on bytes
+	{
+		str_parameters temp;
+		uint8_t bytes[sizeof(*struct_ptr)];
+	}save_union_par;
+
+	uint16_t status_read;
+	uint16_t read_fail = 1;
+	uint8_t data;             //Temporal variable to copy each data from EEPROM to Union
+	for (uint8_t i=0; i<sizeof(*struct_ptr); i++)  //Transfers values to Union
+	{
+		status_read = ee_read(i, 1, &data);
+		save_union_par.bytes[i] = data;   //Save data on union
+		if (!status_read){
+			read_fail = 0;
+		}
+	}
+	*struct_ptr = save_union_par.temp;
+	return read_fail;
 }
 
 /* USER CODE END 4 */

@@ -271,7 +271,7 @@ bool ee_write(uint32_t startVirtualAddress, uint32_t len, uint8_t *data)
     if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, ((i + startVirtualAddress)) + _EE_ADDR_INUSE, (uint64_t)(data[i])) != HAL_OK)
     {
       HAL_FLASH_Lock();
-      return false;
+      return true;
     }
   }	
 #endif
@@ -281,7 +281,7 @@ bool ee_write(uint32_t startVirtualAddress, uint32_t len, uint8_t *data)
     if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, ((i + startVirtualAddress)) + _EE_ADDR_INUSE, (uint64_t)(data[i] | (data[i+1] << 8))) != HAL_OK)
     {
       HAL_FLASH_Lock();
-      return false;
+      return true;
     }
   }	
 #endif
@@ -299,7 +299,7 @@ bool ee_write(uint32_t startVirtualAddress, uint32_t len, uint8_t *data)
     if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, ((i + startVirtualAddress)) + _EE_ADDR_INUSE, data64) != HAL_OK)
     {
       HAL_FLASH_Lock();
-      return false;
+      return true;
     }
   }
 #endif
