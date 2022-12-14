@@ -59,12 +59,22 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define EXTRA_OUT_Pin GPIO_PIN_13
+#define EXTRA_OUT_GPIO_Port GPIOC
 #define PULSE_Pin GPIO_PIN_0
 #define PULSE_GPIO_Port GPIOA
-#define ENABLE_Pin GPIO_PIN_1
-#define ENABLE_GPIO_Port GPIOA
+#define PULSE_IN_Pin GPIO_PIN_1
+#define PULSE_IN_GPIO_Port GPIOA
 #define DIR_Pin GPIO_PIN_2
 #define DIR_GPIO_Port GPIOA
+#define ENABLE_Pin GPIO_PIN_3
+#define ENABLE_GPIO_Port GPIOA
+#define ENDSTOP_RIGHT_Pin GPIO_PIN_4
+#define ENDSTOP_RIGHT_GPIO_Port GPIOA
+#define ENDSTOP_LEFT_Pin GPIO_PIN_5
+#define ENDSTOP_LEFT_GPIO_Port GPIOA
+#define EXTRA_INPUT_Pin GPIO_PIN_6
+#define EXTRA_INPUT_GPIO_Port GPIOA
 #define SW_LEFT_Pin GPIO_PIN_12
 #define SW_LEFT_GPIO_Port GPIOB
 #define SW_RIGHT_Pin GPIO_PIN_13
@@ -77,6 +87,8 @@ void Error_Handler(void);
 #define EN_A_GPIO_Port GPIOA
 #define EN_B_Pin GPIO_PIN_9
 #define EN_B_GPIO_Port GPIOA
+#define RPM_Pin GPIO_PIN_7
+#define RPM_GPIO_Port GPIOB
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */
