@@ -41,17 +41,25 @@
 #define MID 2
 #define RIGHT 1						//Definition RIGHT to 1
 #define LEFT 0						//Definition LEFT to 0
+#define BOTH 2						//Definition BOTH to 2
+#define NONE 3						//Definition NONE to 3
+#define RESTART 10					//Definition to restarting
+#define READ	11					//Definition for READ
+#define SUBFIXNO 0					//Value to dont print subfix
+#define SUBFIXMMMIN 1				//Value to print mm/ subfix
 #define TRUE_HOLD 3					//VAriable to check if buttom is holded pressed
 #define CLK_FREQ_T2	42000000		//Frequency for the Clock, used on TIM2
 #define DEBOUNCING_TIME 100			//TIme for checking debouncing FLAG in ms (MAX 1 Second)
 #define TIMER9_PERIOD 100			//TIme for TIMER9 period FLAG in ms (MAX 1 Second)
-#define	SW_HOLD_TIME 10				//Multiplier x100 to obtain the time we want to keep the button pressed to being hold pressing
+#define	SW_HOLD_TIME 20				//Multiplier x100 to obtain the time we want to keep the button pressed to being hold pressing
 #define HIGH_SPEED_INCREMENT 10		//Increment where Target speed if higher than min speed gap
 #define LOW_SPEED_INCREMENT 1		//Increment where Target speed if higher than min speed gap
 #define MIN_SPEED_GAP 30			//Difference between target and current speed to use HIGH_SPEED_INCREMENT
 #define ACC_UPDATE_RATIO 50			//RAtio for Acceleration update in ms (MAX 1 Second)
 #define CHAR_BUFF_SIZE 4			//Buffer for float to char conversion
 #define TIM11_preescaler 642		//Preescaler for TIM11, max 1 second
+#define ARROW_REFRESH 7 			//Times x100ms for Arrow Refresh (Example if 5 then 5x100ms = 500ms)
+#define SCROLLING_TEXT 2			//Times x100ms for Text Scrolling movement (Example if 5 then 5x100ms = 500ms)
 //Definition absolute max/min values (Limiting as well the configuration)
 #define MAX_FAST_MOVEMENT_FEEDRATE 700	//Maximum feedrate for fas movement
 #define MAX_LIMIT_FEEDRATE	700			//Value as limit for feedrate
@@ -72,6 +80,7 @@
 #define MOVE_RIGHT		 1			//Move right state
 #define MOVE_LEFT		 2			//Move left state
 #define CONFIGURATION	 4			//Configuration Mode
+#define E_STOP_SETTING   5			//E-STOP configuration Mode
 
 
 /* USER CODE END PD */
@@ -104,6 +113,52 @@ uint16_t state = INITIALIZATION;				//Variable for the main state machine
 uint16_t previous_state = INITIALIZATION;		//Variable for the previous state machine
 uint16_t configuration_status = 0;				//Variable for the configuration Menu
 uint16_t step_mode = STEP_NORMAL;		//Select mode of increase steps
+uint16_t estop_status = NONE;
+
+/* Custom characters*/
+uint8_t char_left_arrow[] = {
+  0x01,
+  0x03,
+  0x07,
+  0x0F,
+  0x0F,
+  0x07,
+  0x03,
+  0x01
+};
+
+uint8_t char_left_empty_arrow[] = {
+  0x01,
+  0x03,
+  0x05,
+  0x09,
+  0x09,
+  0x05,
+  0x03,
+  0x01
+};
+
+uint8_t char_right_empty_arrow[] = {
+  0x10,
+  0x18,
+  0x14,
+  0x12,
+  0x12,
+  0x14,
+  0x18,
+  0x10
+};
+
+uint8_t char_right_arrow[] = {
+  0x10,
+  0x18,
+  0x1C,
+  0x1E,
+  0x1E,
+  0x1C,
+  0x18,
+  0x10
+};
 
 //Structure to storage and load the parameters
 typedef struct
@@ -135,6 +190,13 @@ uint16_t aux_sw_status = 0;				//Variable to storage the aux sw status
 uint32_t delay100ms_counter = 0;		//Variable for delay counter 1 = 100ms
 uint32_t old_delay100ms_counter = 0;	//Variable to storage the previous delay_counter
 uint16_t save_bool = FALSE;				//Variable to save or not the parameters after config
+int32_t pulses_counter = 0;				//Variable to storage the pulses
+int32_t saved_pulses_counter = 0;		//Variable to storage the pulses and save them
+int32_t limit_pulses_counter = 0;		//Variable to storage the limit of pulses
+int32_t elimit_pulses_right = 0;		//Variable to storage the limit of right position
+int32_t elimit_pulses_left = 0;			//Variable to storage the limit of left position
+
+
 
 /* FLAGS*/
 uint16_t update_speed = 0;				//Flag to update the speed
@@ -143,6 +205,17 @@ uint16_t debouncing_en_sw = 0;			//Flag for debouncing (Time select with time 10
 uint16_t debouncing_aux_sw = 0;			//Flag for aux_switch debouncing (Time select with time 10)
 uint16_t debouncing = 0;				//Counter for debouncing
 uint16_t aux_debouncing = 0;			//Counter 2 for debouncing aux_switch
+uint16_t arrow_flag_counter = 0;		//Counter for the arrow flag
+uint16_t arrow_flag = 0;				//Flag to print arrow
+uint16_t scrolling_flag = 0;			//Flag for scrolling
+uint16_t scrolling_flag_counter = 0;	//Flag for scrolling
+uint8_t estop_activated_flag = 0;		//Flag for e-stop activation
+
+/*Messages*/
+char eStopText[] = "Activate Power Feed or Keep push to CANCEL - ";
+char eStopText_2_Right[] = "Keep push to Set RIGHT Limit - ";
+char eStopText_2_Left[] = "Keep push to Set LEFT Limit - ";
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -159,7 +232,7 @@ static void MX_TIM4_Init(void);
 static void MX_TIM5_Init(void);
 /* USER CODE BEGIN PFP */
 int32_t Encoder_Read(void);
-void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t row_pos);
+void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t row_pos, int32_t subfix);
 void Motor_Enable(uint16_t invert);
 void Motor_Disable(uint16_t invert);
 void Motor_Direction(uint16_t direction, uint16_t invert);
@@ -177,6 +250,10 @@ static char * _float_to_char(float x, char *p);
 void LCD_Write_Float_Number(float float_char, int32_t col_pos_float, int32_t row_pos_float);
 uint16_t Save_Parameter_Data(str_parameters*);
 uint16_t Read_Parameter_Data(str_parameters*);
+void Write_Arrow(uint16_t arrowMode, uint16_t eStop_Mode);
+void Write_Text_Scrolling(char*, uint16_t row, uint16_t col, uint16_t enable);
+uint32_t Step_Tracking(uint16_t status);
+
 
 /* USER CODE END PFP */
 
@@ -250,6 +327,10 @@ int main(void)
   lcdSetCursor(2,1);
   lcdPrint("Power Feed V2.0");
   lcd_update = FALSE;				//LCD has been updated
+  lcdCreateChar(0, char_left_arrow);
+  lcdCreateChar(1, char_left_empty_arrow);
+  lcdCreateChar(2, char_right_arrow);
+  lcdCreateChar(3, char_right_empty_arrow);
 
   /* Encoder Initialization */
   HAL_TIM_Encoder_Start_IT(&htim1, TIM_CHANNEL_ALL);
@@ -268,6 +349,7 @@ int main(void)
 	  if (Encoder_Switch_Status_Read() == TRUE_HOLD){	//If encoder is hold enter in configuration
 		  state = CONFIGURATION;
 		  lcd_update=TRUE;
+		  break;
 	  }else{
 		  state = INITIALIZATION;	//If not, enter into Initialization
 	  }
@@ -301,7 +383,6 @@ int main(void)
   /* USER CODE BEGIN WHILE */
 
 
-
   while (1)
   {
 	  switch (state)
@@ -321,37 +402,88 @@ int main(void)
 		  		  target_feedrate = parameter.initial_feedrate;
 		  		  display_feedrate = target_feedrate;
 				  LCD_Write_Feedrate(display_feedrate, 11, 0);	//Print the default speed
+				  Motor_Disable(parameter.en_invert);			//Disable the Motor at startup.
+				  Write_Arrow(STANDBY, estop_status);
 				  state = STANDBY;								//Go to standby
 	  		  }
 	  		  break;
 	  	  case STANDBY:		//Standby state (Not movement, switch in the middle)
-	  		Update_Feedrate(&target_feedrate);				//Update the feedrate from encoder
-	  		display_feedrate = target_feedrate;				//Update variable to display the feedrate
-	  		LCD_Write_Feedrate(display_feedrate, 11, 0);	//Print the default speed
-	  		if ( Encoder_Switch_Status_Read() ){			//Check if the encoder is pressed to change the step mode
-	  			if (step_mode == STEP_NORMAL){
-	  				step_mode = STEP_x10;
-	  			}else if(step_mode == STEP_x10){
+	  		  /*
+  			  if ( previous_state == MOVE_RIGHT ){
+  				  if ( estop_status == RIGHT ){
+  					estop_status = BOTH;
+  					limit_pulses_counter = saved_pulses_counter;
+  				  }else if( estop_status == LEFT ){
+  					estop_status = BOTH;
+  					limit_pulses_counter = saved_pulses_counter;
+  				  }
+  			  }else if ( previous_state == MOVE_LEFT ){
+  			  }*/
+
+	  		  if (lcd_update){				//Update the LCD coming from others states
+	  			  lcdSetCursor(0,1);
+	  			  lcdPrint("Mode: STOP ");
+	  			  lcd_update = FALSE;			//Reset flag for LCD Update
+	  			  lcdSetCursor(0,2);
+	  			  lcdPrint("                  ");
+	  			  Write_Arrow(STANDBY, estop_status);
+	  		  }
+	  		  Update_Feedrate(&target_feedrate);				//Update the feedrate from encoder
+	  		  display_feedrate = target_feedrate;				//Update variable to display the feedrate
+	  		  LCD_Write_Feedrate(display_feedrate, 11, 0);	//Print the default speed
+	  		  encoder_sw_status = Encoder_Switch_Status_Read();
+	  		  if ( encoder_sw_status == TRUE ){			//Check if the encoder is pressed to change the step mode
+	  			  if (step_mode == STEP_NORMAL){
+	  				  step_mode = STEP_x10;
+	  			  }else if(step_mode == STEP_x10){
 	  				step_mode = STEP_NORMAL;
-	  			}
-	  		}
-	  		if (lcd_update){				//Update the LCD coming from others states
-	  			lcdSetCursor(0,1);
-	  			lcdPrint("Mode: STOP ");
-	  			lcd_update = FALSE;			//Reset flag for LCD Update
-	  		}
-	  		if (previous_state != STANDBY){		//If previous status is Standby the enable motor and direction
-	  			previous_state = STANDBY;		//Change previous state to current one
-	  		}
-	  		if ( ( Switch_Status_Read() == RIGHT ) && ( current_feedrate == 0 ) ){		//Check if the switch is on right mode
-	  			previous_state = STANDBY;		//Setting previous state to STANDBY
-	  			state = MOVE_RIGHT;				//Change state to RIGHT
-	  			lcd_update = TRUE;				//Set flag for LCD update
-	  		}else if ( ( Switch_Status_Read() == LEFT ) && ( current_feedrate == 0 ) ){	//Check if the switch is on left mode
-	  			previous_state = STANDBY;		//Setting previous state to STANDBY
-	  			state = MOVE_LEFT;				//Change state to RIGHT
-	  			lcd_update = TRUE;				//Set flag for LCD update
-	  		}
+	  			  }
+	  		  }else if ( encoder_sw_status == TRUE_HOLD ){	//If Encoder is holded, enter into E-Stop Setting mode
+	  			  if ( estop_status == RIGHT ){
+	  				estop_status = BOTH;
+	  				elimit_pulses_right = saved_pulses_counter;
+	  				Write_Arrow(STANDBY, estop_status);
+	  			  }else if( estop_status == LEFT ){
+	  				estop_status = BOTH;
+	  				elimit_pulses_left = saved_pulses_counter;
+	  				Write_Arrow(STANDBY, estop_status);
+	  			  }else if( estop_status == NONE ){
+					previous_state = STANDBY;		//Setting previous state to STANDBY
+					state = E_STOP_SETTING;			//Change state to ESTOP Menu
+					lcd_update = TRUE;				//Set flag for LCD update
+	  			  }else if ( estop_status == BOTH ){
+	  				estop_status = NONE;
+	  				Write_Arrow(STANDBY, estop_status);
+	  			  }
+	  		  }
+	  		  if (previous_state != STANDBY){		//If previous status is not Standby set previous status as standby
+	  			  previous_state = STANDBY;		//Change previous state to current one
+	  			  Step_Tracking(DISABLE);
+	  		  }
+
+	  		  if ( estop_status == RIGHT ){
+				  if (scrolling_flag){
+					  Write_Text_Scrolling(eStopText_2_Right, 2, 0, TRUE);
+					  scrolling_flag = FALSE;
+				  }
+	  		  }else if ( estop_status == LEFT ){
+				  if (scrolling_flag){
+					  Write_Text_Scrolling(eStopText_2_Left, 2, 0, TRUE);
+					  scrolling_flag = FALSE;
+				  }
+	  		  }else{
+	  			  Write_Text_Scrolling(eStopText_2_Right, 2, 0, FALSE);
+	  		  }
+
+	  		  if ( ( Switch_Status_Read() == RIGHT ) && ( current_feedrate == 0 ) ){		//Check if the switch is on right mode
+	  			  previous_state = STANDBY;		//Setting previous state to STANDBY
+	  			  state = MOVE_RIGHT;				//Change state to RIGHT
+	  			  lcd_update = TRUE;				//Set flag for LCD update
+	  		  }else if ( ( Switch_Status_Read() == LEFT ) && ( current_feedrate == 0 ) ){	//Check if the switch is on left mode
+	  			  previous_state = STANDBY;		//Setting previous state to STANDBY
+	  			  state = MOVE_LEFT;				//Change state to RIGHT
+	  			  lcd_update = TRUE;				//Set flag for LCD update
+	  		  }
 	  		  break;
 	  	  case MOVE_RIGHT:	//Right state, movement to the RIGHT
 	  		  encoder_sw_status = Encoder_Switch_Status_Read();
@@ -387,6 +519,9 @@ int main(void)
 			  		lcd_update = TRUE;				//Set flag to update display
 			  		Motor_Disable(parameter.en_invert);		//Disable Motor
 			  		target_feedrate = display_feedrate;	//Update feedrate
+			  		pulses_counter = Step_Tracking(DISABLE);
+			  		saved_pulses_counter = saved_pulses_counter + pulses_counter;
+			  		estop_activated_flag = FALSE;
 			  		break;							//Exit this state
 			  	}
 	  		  }else if ( sw_status == MID ){		//If it is on Mid position, change to STOP or STANDBY status
@@ -396,9 +531,43 @@ int main(void)
 	  				lcd_update = TRUE;				//Set flag to update display
 	  				Motor_Disable(parameter.en_invert);		//Disable Motor
 	  				target_feedrate = display_feedrate;	//Update feedrate
+	  				pulses_counter = Step_Tracking(DISABLE);
+	  				saved_pulses_counter = saved_pulses_counter + pulses_counter;
+	  				estop_activated_flag = FALSE;
 	  				break;							//Exit this state
 	  			}
 	  		  }
+
+	  		  pulses_counter = Step_Tracking(READ);
+	  		  saved_pulses_counter = saved_pulses_counter + pulses_counter;
+	  		  if ( estop_status == BOTH ){
+				  if ( elimit_pulses_right < 0){
+					  if ( saved_pulses_counter <= elimit_pulses_right){
+						  target_feedrate = 0;
+						  if ( current_feedrate == 0 ){
+							  Motor_Disable(parameter.en_invert);		//Disable Motor
+							  target_feedrate = display_feedrate;		//Update feedrate
+							  estop_activated_flag = TRUE;
+							  lcdSetCursor(0,2);
+							  lcdPrint("E-STOP Reached");
+							  Write_Arrow(STANDBY, estop_status);
+						  }
+					  }
+				  }else if ( elimit_pulses_right >= 0 ){
+					  if ( saved_pulses_counter >= elimit_pulses_right){
+						  target_feedrate = 0;
+						  if ( current_feedrate == 0 ){
+							  Motor_Disable(parameter.en_invert);		//Disable Motor
+							  target_feedrate = display_feedrate;		//Update feedrate
+							  estop_activated_flag = TRUE;
+							  lcdSetCursor(0,2);
+							  lcdPrint("E-STOP Reached");
+							  Write_Arrow(STANDBY, estop_status);
+						  }
+					  }
+				  }
+	  		  }
+
 	  		  if (lcd_update){				//Update the LCD coming from others states
 	  			  lcdSetCursor(0,1);
 	  			  lcdPrint("Mode: RIGHT");
@@ -408,10 +577,15 @@ int main(void)
 				  Motor_Direction(RIGHT, parameter.dir_invert);	//Set direction to right
 				  Motor_Enable(parameter.en_invert);				//Enable Motor
 				  previous_state = MOVE_RIGHT;			//Change previous state to current one
+				  Step_Tracking(ENABLE);
 	  		  }
 	  		  if (update_speed){					//Update speed if the flag is set
 	  			  current_feedrate = Motor_Feedrate_Update(&current_feedrate, &target_feedrate);
 				  update_speed = 0;					//Reset the update_speed flag
+	  		  }
+	  		  if ( ( arrow_flag ) && ( estop_activated_flag == FALSE )){
+	  			  Write_Arrow(RIGHT, estop_status);
+	  			  arrow_flag = FALSE;
 	  		  }
 	  		  break;
 	  	  case MOVE_LEFT:	//Left state, movement to the Left
@@ -448,6 +622,9 @@ int main(void)
 		  			lcd_update = TRUE;				//Set flag to update display
 		  			Motor_Disable(parameter.en_invert);		//Disable Motor
 		  			target_feedrate = display_feedrate;	//Update feedrate
+		  			pulses_counter = Step_Tracking(DISABLE);
+		  			saved_pulses_counter = saved_pulses_counter - pulses_counter;
+		  			estop_activated_flag = FALSE;
 		  			break;							//Exit this state
 		  		}
 	  		  }else if ( sw_status == MID ){		//If it is on Mid position, change to STOP or STANDBY status
@@ -457,9 +634,44 @@ int main(void)
 	  				lcd_update = TRUE;				//Set flag to update display
 	  				Motor_Disable(parameter.en_invert);		//Disable Motor
 	  				target_feedrate = display_feedrate;	//Update feedrate
+	  				pulses_counter = Step_Tracking(DISABLE);
+	  				saved_pulses_counter = saved_pulses_counter - pulses_counter;
+	  				estop_activated_flag = FALSE;
 	  				break;							//Exit this state
 	  			}
 	  		  }
+
+	  		  pulses_counter = Step_Tracking(READ);
+	  		  saved_pulses_counter = saved_pulses_counter - pulses_counter;
+	  		  if ( estop_status == BOTH ){
+				  if ( elimit_pulses_left < 0){
+					  if ( saved_pulses_counter <= elimit_pulses_left){
+						  target_feedrate = 0;
+						  if ( current_feedrate == 0 ){
+							  Motor_Disable(parameter.en_invert);		//Disable Motor
+							  target_feedrate = display_feedrate;		//Update feedrate
+							  estop_activated_flag = TRUE;
+							  lcdSetCursor(0,2);
+							  lcdPrint("E-STOP Reached");
+							  Write_Arrow(STANDBY, estop_status);
+						  }
+					  }
+				  }else if ( elimit_pulses_left >= 0 ){
+					  if ( saved_pulses_counter <= elimit_pulses_left){
+						  target_feedrate = 0;
+						  if ( current_feedrate == 0 ){
+							  Motor_Disable(parameter.en_invert);		//Disable Motor
+							  target_feedrate = display_feedrate;		//Update feedrate
+							  estop_activated_flag = TRUE;
+							  lcdSetCursor(0,2);
+							  lcdPrint("E-STOP Reached");
+							  Write_Arrow(STANDBY, estop_status);
+						  }
+					  }
+				  }
+	  		  }
+
+
 	  		  if (lcd_update){				//Update the LCD comming from others states
 	  			lcdSetCursor(0,1);
 	  			lcdPrint("Mode: LEFT ");
@@ -469,10 +681,58 @@ int main(void)
 	  		  Motor_Direction(LEFT, parameter.dir_invert);	//Set direction to left
 	  		  Motor_Enable(parameter.en_invert);				//Enable Motor
 	  		  previous_state = MOVE_LEFT;			//Change previous state to current one
+	  		  Step_Tracking(ENABLE);
 	  		  }
 	  		  if (update_speed){					//Update speed if the flag is set
 	  			  current_feedrate = Motor_Feedrate_Update(&current_feedrate, &target_feedrate);
 				  update_speed = 0;					//Reset the update_speed flag
+	  		  }
+	  		  if ( ( arrow_flag ) && ( estop_activated_flag == FALSE )){
+	  			  Write_Arrow(LEFT, estop_status);
+	  			  arrow_flag = FALSE;
+	  		  }
+	  		  break;
+	  	  case E_STOP_SETTING:
+	  		  if (lcd_update){				//Update the LCD coming from others states
+	  			  lcdSetCursor(0,1);
+	  			  lcdPrint("Mode: ESTOP");
+	  			  lcd_update = FALSE;			//Reset flag for LCD Update
+	  			  Write_Arrow(STANDBY, estop_status);
+	  		  }
+	  		  if (scrolling_flag){
+	  			Write_Text_Scrolling(eStopText, 2, 0, TRUE);
+	  			scrolling_flag = FALSE;
+	  		  }
+	  		  encoder_sw_status = Encoder_Switch_Status_Read();
+	  		  if ( encoder_sw_status == TRUE ){			//Check if the encoder is pressed to change the step mode
+
+	  		  }else if ( encoder_sw_status == TRUE_HOLD ){	//If Encoder is holded, exit E-Stop Setting mode
+	  			  previous_state = E_STOP_SETTING;		//Setting previous state to STANDBY
+	  			  state = STANDBY;					//Change state to RIGHT
+	  			  lcd_update = TRUE;				//Set flag for LCD update
+	  			  Write_Text_Scrolling(eStopText, 2, 0, FALSE);	//Remove the test scrolling
+	  			  estop_status = NONE;				//Set e-stop status to NONE (Not activated)
+	  			  Write_Arrow(STANDBY, estop_status);
+	  		  }
+	  		  if (previous_state != E_STOP_SETTING){		//If previous status is Standby the enable motor and direction
+	  			  previous_state = E_STOP_SETTING;		//Change previous state to current one
+	  		  }
+	  		  if ( ( Switch_Status_Read() == RIGHT ) && ( current_feedrate == 0 ) ){		//Check if the switch is on right mode
+	  			  previous_state = E_STOP_SETTING;		//Setting previous state to E-STOP
+	  			  state = MOVE_RIGHT;				//Change state to RIGHT
+	  			  estop_status = RIGHT;				//Change e-stop status to RIGHT
+	  			  lcd_update = TRUE;				//Set flag for LCD update
+	  			  elimit_pulses_left = saved_pulses_counter;	//Set the limit on the left side
+	  			  Write_Arrow(STANDBY, estop_status);	//Print arrow with left limit enable
+	  			  Write_Text_Scrolling(eStopText, 2, 0, FALSE);	//Remove the test scrolling
+	  		  }else if ( ( Switch_Status_Read() == LEFT ) && ( current_feedrate == 0 ) ){	//Check if the switch is on left mode
+	  			  previous_state = E_STOP_SETTING;		//Setting previous state to E-STOP
+	  			  state = MOVE_LEFT;				//Change state to RIGHT
+	  			  estop_status = LEFT;				//Change e-stop status to LEFT
+	  			  lcd_update = TRUE;				//Set flag for LCD update
+	  			  elimit_pulses_right = saved_pulses_counter;	//Set the limit on the right side
+	  			  Write_Arrow(STANDBY, estop_status);	//Print arrow with right limit enable
+	  			  Write_Text_Scrolling(eStopText, 2, 0, FALSE);	//Remove the test scrolling
 	  		  }
 	  		  break;
 	  	  case CONFIGURATION:	//State for Configuration Menu
@@ -556,7 +816,7 @@ int main(void)
 						  lcdPrint("CONFIGURATION");
 						  lcdSetCursor(0, 1);
 						  lcdPrint("Motor Steps per Rev:");
-						  LCD_Write_Number(parameter.motor_stepsrev, 0, 2);
+						  LCD_Write_Number(parameter.motor_stepsrev, 0, 2, SUBFIXNO);
 						  lcdSetCursor(8, 2);
 						  lcdPrint("(pulse/rev)");
 						  lcd_update = FALSE;
@@ -570,7 +830,7 @@ int main(void)
 						  }else if ( parameter.motor_stepsrev > MAX_MOTOR_STEPREV){
 							  parameter.motor_stepsrev = MAX_MOTOR_STEPREV;
 						  }
-						  LCD_Write_Number(parameter.motor_stepsrev, 0, 2);
+						  LCD_Write_Number(parameter.motor_stepsrev, 0, 2, SUBFIXNO);
 					  }
 					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
 						configuration_status += 1;
@@ -614,7 +874,7 @@ int main(void)
 						  lcdPrint("CONFIGURATION");
 						  lcdSetCursor(0, 1);
 						  lcdPrint("Maximum Feedrate:");
-						  LCD_Write_Number(parameter.max_feedrate, 0, 2);
+						  LCD_Write_Number(parameter.max_feedrate, 0, 2, SUBFIXNO);
 						  lcdSetCursor(10, 2);
 						  lcdPrint("(mm/min)");
 						  lcd_update = FALSE;
@@ -628,7 +888,7 @@ int main(void)
 						  }else if ( parameter.max_feedrate > MAX_LIMIT_FEEDRATE){
 							  parameter.max_feedrate = MAX_LIMIT_FEEDRATE;
 						  }
-						  LCD_Write_Number(parameter.max_feedrate, 0, 2);
+						  LCD_Write_Number(parameter.max_feedrate, 0, 2, SUBFIXNO);
 					  }
 					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
 						configuration_status += 1;
@@ -643,7 +903,7 @@ int main(void)
 						  lcdPrint("CONFIGURATION");
 						  lcdSetCursor(0, 1);
 						  lcdPrint("Fast Mov Feedrate:");
-						  LCD_Write_Number(parameter.fast_movement_feedrate, 0, 2);
+						  LCD_Write_Number(parameter.fast_movement_feedrate, 0, 2, SUBFIXNO);
 						  lcdSetCursor(10, 2);
 						  lcdPrint("(mm/min)");
 						  lcd_update = FALSE;
@@ -657,7 +917,7 @@ int main(void)
 						  }else if ( parameter.fast_movement_feedrate > MAX_FAST_MOVEMENT_FEEDRATE){
 							  parameter.fast_movement_feedrate = MAX_FAST_MOVEMENT_FEEDRATE;
 						  }
-						  LCD_Write_Number(parameter.fast_movement_feedrate, 0, 2);
+						  LCD_Write_Number(parameter.fast_movement_feedrate, 0, 2, SUBFIXNO);
 					  }
 					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
 						configuration_status += 1;
@@ -672,7 +932,7 @@ int main(void)
 						  lcdPrint("CONFIGURATION");
 						  lcdSetCursor(0, 1);
 						  lcdPrint("Initial Feedrate:");
-						  LCD_Write_Number(parameter.initial_feedrate, 0, 2);
+						  LCD_Write_Number(parameter.initial_feedrate, 0, 2, SUBFIXNO);
 						  lcdSetCursor(10, 2);
 						  lcdPrint("(mm/min)");
 						  lcd_update = FALSE;
@@ -686,7 +946,7 @@ int main(void)
 						  }else if ( parameter.initial_feedrate > parameter.max_feedrate){
 							  parameter.initial_feedrate = parameter.max_feedrate;
 						  }
-						  LCD_Write_Number(parameter.initial_feedrate, 0, 2);
+						  LCD_Write_Number(parameter.initial_feedrate, 0, 2, SUBFIXNO);
 					  }
 					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
 						configuration_status += 1;
@@ -701,7 +961,7 @@ int main(void)
 						  lcdPrint("CONFIGURATION");
 						  lcdSetCursor(0, 1);
 						  lcdPrint("Acc Time:");
-						  LCD_Write_Number(parameter.acc_time, 0, 2);
+						  LCD_Write_Number(parameter.acc_time, 0, 2, SUBFIXNO);
 						  lcdSetCursor(10, 2);
 						  lcdPrint("(ms)");
 						  lcd_update = FALSE;
@@ -715,7 +975,7 @@ int main(void)
 						  }else if ( parameter.acc_time > MAX_ACCELERATION_TIME){
 							  parameter.acc_time = MAX_ACCELERATION_TIME;
 						  }
-						  LCD_Write_Number(parameter.acc_time, 0, 2);
+						  LCD_Write_Number(parameter.acc_time, 0, 2, SUBFIXNO);
 					  }
 					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
 						configuration_status += 1;
@@ -730,7 +990,7 @@ int main(void)
 						  lcdPrint("CONFIGURATION");
 						  lcdSetCursor(0, 1);
 						  lcdPrint("Acc Update Ratio:");
-						  LCD_Write_Number(parameter.acc_update_ratio, 0, 2);
+						  LCD_Write_Number(parameter.acc_update_ratio, 0, 2, SUBFIXNO);
 						  lcdSetCursor(10, 2);
 						  lcdPrint("(ms)");
 						  lcd_update = FALSE;
@@ -744,7 +1004,7 @@ int main(void)
 						  }else if ( parameter.acc_update_ratio > MAX_ACC_UPDATE_RATIO){
 							  parameter.acc_update_ratio = MAX_ACC_UPDATE_RATIO;
 						  }
-						  LCD_Write_Number(parameter.acc_update_ratio, 0, 2);
+						  LCD_Write_Number(parameter.acc_update_ratio, 0, 2, SUBFIXNO);
 					  }
 					  if ( Encoder_Switch_Status_Read() == TRUE){	//If encoder is pressed, continue to next parameter
 						configuration_status += 1;
@@ -961,7 +1221,7 @@ static void MX_TIM1_Init(void)
 {
 
   /* USER CODE BEGIN TIM1_Init 0 */
-
+	//Timer for ENCODER
   /* USER CODE END TIM1_Init 0 */
 
   TIM_Encoder_InitTypeDef sConfig = {0};
@@ -1012,7 +1272,7 @@ static void MX_TIM2_Init(void)
 {
 
   /* USER CODE BEGIN TIM2_Init 0 */
-
+	//Timer for PULSE
   /* USER CODE END TIM2_Init 0 */
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
@@ -1072,7 +1332,7 @@ static void MX_TIM4_Init(void)
 {
 
   /* USER CODE BEGIN TIM4_Init 0 */
-
+	//Timer for RPM Counter
   /* USER CODE END TIM4_Init 0 */
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
@@ -1130,7 +1390,7 @@ static void MX_TIM5_Init(void)
 {
 
   /* USER CODE BEGIN TIM5_Init 0 */
-
+	//Timer for Pulse Counter
   /* USER CODE END TIM5_Init 0 */
 
   TIM_SlaveConfigTypeDef sSlaveConfig = {0};
@@ -1152,7 +1412,7 @@ static void MX_TIM5_Init(void)
   sSlaveConfig.SlaveMode = TIM_SLAVEMODE_EXTERNAL1;
   sSlaveConfig.InputTrigger = TIM_TS_TI2FP2;
   sSlaveConfig.TriggerPolarity = TIM_TRIGGERPOLARITY_RISING;
-  sSlaveConfig.TriggerFilter = 0;
+  sSlaveConfig.TriggerFilter = 5;
   if (HAL_TIM_SlaveConfigSynchro(&htim5, &sSlaveConfig) != HAL_OK)
   {
     Error_Handler();
@@ -1347,6 +1607,16 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		}
 	}else if( htim == &htim9 ){
 		delay100ms_counter += 1;
+		arrow_flag_counter += 1;
+		scrolling_flag_counter += 1;
+		if ( arrow_flag_counter == ARROW_REFRESH){
+			arrow_flag_counter = 0;
+			arrow_flag = TRUE;
+		}
+		if (scrolling_flag_counter == SCROLLING_TEXT){
+			scrolling_flag_counter = 0;
+			scrolling_flag = TRUE;
+		}
 	}
 }
 
@@ -1385,57 +1655,93 @@ int32_t Encoder_Read(void)
   * 		row_pos - raw position for the number
   * @retval
   */
-void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t row_pos)
+void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t row_pos, int32_t subfix)
 {
 	char str[10];					//Variable to storage the string
 	sprintf(str, "%ld", value);		//Convert number to string
 	if (value > 0){					//If value is positive
 		if (value < 10){			//If value is lower than 10
 			lcdSetCursor(col_pos+1,row_pos);
-			lcdPrint(" ");
+			if ( subfix == SUBFIXNO ){
+				lcdPrint(" ");
+			}else if ( subfix == SUBFIXMMMIN ){
+				lcdPrint("mm/min ");
+			}
 			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
 		}else if (value < 100){		//If value is lower than 100
 			lcdSetCursor(col_pos+2,row_pos);
-			lcdPrint(" ");
+			if ( subfix == SUBFIXNO ){
+				lcdPrint(" ");
+			}else if ( subfix == SUBFIXMMMIN ){
+				lcdPrint("mm/min ");
+			}
 			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
 		}else if (value < 1000){	//If value is lower than 1000
 			lcdSetCursor(col_pos+3,row_pos);
-			lcdPrint(" ");
+			if ( subfix == SUBFIXNO ){
+				lcdPrint(" ");
+			}else if ( subfix == SUBFIXMMMIN ){
+				lcdPrint("mm/min ");
+			}
 			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
 		}else if (value < 10000){	//If value is lower than 10000
 			lcdSetCursor(col_pos+4,row_pos);
-			lcdPrint(" ");
+			if ( subfix == SUBFIXNO ){
+				lcdPrint(" ");
+			}else if ( subfix == SUBFIXMMMIN ){
+				lcdPrint("mm/min ");
+			}
 			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
 		}else if (value < 100000){	//If value is lower than 100000
 			lcdSetCursor(col_pos+5,row_pos);
-			lcdPrint(" ");
+			if ( subfix == SUBFIXNO ){
+				lcdPrint(" ");
+			}else if ( subfix == SUBFIXMMMIN ){
+				lcdPrint("mm/min ");
+			}
 			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
 		}
 	}else if (value < 0) {			//If value is negative
 		if (value > -10){			//If value is higher than -10
 			lcdSetCursor(col_pos+2,row_pos);
-			lcdPrint(" ");
+			if ( subfix == SUBFIXNO ){
+				lcdPrint(" ");
+			}else if ( subfix == SUBFIXMMMIN ){
+				lcdPrint("mm/min ");
+			}
 			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
 		}else if (value > -100){	//If value is higher than -100
 			lcdSetCursor(col_pos+2,row_pos);
-			lcdPrint("  ");
+			if ( subfix == SUBFIXNO ){
+				lcdPrint("   ");
+			}else if ( subfix == SUBFIXMMMIN ){
+				lcdPrint("mm/min ");
+			}
 			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
 		}else if (value > -1000){	//If value is higher than -1000
 			lcdSetCursor(col_pos+2,row_pos);
-			lcdPrint("   ");
+			if ( subfix == SUBFIXNO ){
+				lcdPrint("   ");
+			}else if ( subfix == SUBFIXMMMIN ){
+				lcdPrint("mm/min ");
+			}
 			lcdSetCursor(col_pos,row_pos);
 			lcdPrint(str);
 		}
 	}else{		// If value is Zero, print 0
 		lcdSetCursor(col_pos,row_pos);
-		lcdPrint("  ");
+		if ( subfix == SUBFIXNO ){
+			lcdPrint("  ");
+		}else if ( subfix == SUBFIXMMMIN ){
+			lcdPrint("mm/min");
+		}
 		lcdSetCursor(col_pos,row_pos);
 		lcdPrint("0");
 	}
@@ -1634,8 +1940,8 @@ uint16_t Motor_Feedrate_Update(int16_t *current_feedrate, int16_t *target_feedra
 void LCD_Write_Feedrate(int32_t feedrate, int32_t col_pos, int32_t row_pos){
 	static int32_t saved_feedrate;
 	if ( saved_feedrate != feedrate ){					//Print only if the feedrate changed
-		LCD_Write_Number(feedrate,col_pos,row_pos);		//Write the number in the desired position
-		lcdPrint("mm/min ");							//Adding mm/min
+		LCD_Write_Number(feedrate,col_pos,row_pos, SUBFIXMMMIN);		//Write the number in the desired position
+		//lcdPrint("mm/min ");							//Adding mm/min
 		saved_feedrate = feedrate;						//Updating Feedrate Saved
 	}
 }
@@ -1646,7 +1952,7 @@ void LCD_Write_Feedrate(int32_t feedrate, int32_t col_pos, int32_t row_pos){
   * @retval	- Switch Status RIGHT, LEFT, MID, FAIL
   */
 int16_t Switch_Status_Read(void){
-	int16_t switch_right, switch_left, sw_status;
+	int16_t switch_right, switch_left, sw_status = 0;
 	switch_right = HAL_GPIO_ReadPin(SW_RIGHT_GPIO_Port, SW_RIGHT_Pin);	//Storage value of RIGHT pin
 	switch_left = HAL_GPIO_ReadPin(SW_LEFT_GPIO_Port, SW_LEFT_Pin);		//Storage value of LEFT pin
 	if ( !switch_right & !switch_left ){	//If both are enabled at same time, return FAIL
@@ -1700,13 +2006,16 @@ int16_t Encoder_Switch_Status_Read(void){
 		en_sw_status = FALSE;	//Status still FALSE
 		//debouncing_en_sw = FALSE;	//Disable debouncing
 		previous_en_sw_status = TRUE;	//Set previous status of enable TRUE
-		if ( temp_debouncing+SW_HOLD_TIME <= debouncing ){	//If we keep the button pressed more than the time defines
+		if ( temp_debouncing + SW_HOLD_TIME <= debouncing ){	//If we keep the button pressed more than the time defines
 			en_sw_status = TRUE_HOLD;
 			previous_en_sw_status = TRUE_HOLD;
+			temp_debouncing = debouncing;
+			debouncing_en_sw = FALSE;	//Disable debouncing
 		}
 	}else if( ( encoder_sw_read_value )){
 		if ( previous_en_sw_status == TRUE_HOLD ){	//If previous status was HOLD< do not report push
 			en_sw_status = FALSE;
+			debouncing_en_sw = FALSE;	//Enable debouncing
 		}else if ( previous_en_sw_status == TRUE ){
 			en_sw_status = TRUE;	//If button released then send status TRUE
 			debouncing_en_sw = FALSE;	//Disable debouncing
@@ -1744,7 +2053,7 @@ void Motor_Update_Feedrate(int16_t *current_feed, int16_t *target_feed){
 int16_t Aux_Switch_Status_Read(void){
 	static uint16_t aux_temp_debouncing = 0;	//Temporal variable to storage the debouncing
 	static uint16_t previous_aux_sw_status;	//Variable to storage the previous status of the encoder switch
-	uint16_t aux_sw_status;
+	uint16_t aux_sw_status = 0;
 	uint16_t aux_sw_read_value;
 
 	aux_sw_read_value = HAL_GPIO_ReadPin(SEC_SW_GPIO_Port, SEC_SW_Pin);
@@ -1753,11 +2062,11 @@ int16_t Aux_Switch_Status_Read(void){
 		debouncing_aux_sw = TRUE;	//Enable debouncing
 		aux_temp_debouncing = aux_debouncing;	//Load value from debouncing
 		aux_sw_status = FALSE;			//SW status still disable waiting debouncing time
-	}else if ( ( !aux_sw_read_value ) && ( aux_temp_debouncing+2 <= aux_debouncing )){ //If encoder still pressed and debouncing +2 already passed
+	}else if ( ( !aux_sw_read_value ) && ( aux_temp_debouncing + 2 <= aux_debouncing ) && (debouncing_aux_sw) ){ //If encoder still pressed and debouncing +2 already passed
 		aux_sw_status = FALSE;	//Status still FALSE
 		//debouncing_aux_sw = FALSE;	//Disable debouncing
 		previous_aux_sw_status = TRUE;	//Set previous status of enable TRUE
-		if ( aux_temp_debouncing+SW_HOLD_TIME <= aux_debouncing ){	//If we keep the button pressed more than the time defines
+		if ( aux_temp_debouncing + SW_HOLD_TIME <= aux_debouncing ){	//If we keep the button pressed more than the time defines
 			aux_sw_status = TRUE_HOLD;
 			previous_aux_sw_status = TRUE_HOLD;
 		}
@@ -1824,6 +2133,163 @@ uint16_t Read_Parameter_Data(str_parameters *struct_ptr){
 	}
 	*struct_ptr = save_union_par.temp;
 	return read_fail;
+}
+
+/**
+* @brief Function to write moviung arrow in the LCD, the function needs to be used together with the arrow counter
+* @param - 	arrowMode : Select the Mode of the Arrow, RIGHT, LEFT or STANDBY
+* 			eStop_Mode : Value for the mode in which the e-stop is working; RIGHT, LEFT, NONE, BOTH
+* @retval
+*/
+void Write_Arrow(uint16_t arrowMode, uint16_t eStop_Mode){
+	static uint16_t arrowCounter = 0;
+	static u_int16_t previousarrowMode;
+
+	if ( eStop_Mode == NONE ){		//Check in which e-stop mode are we and write the end arrows accordingly
+		lcdSetCursor(12, 1);
+		lcdWrite(1);
+		lcdSetCursor(19, 1);
+		lcdWrite(3);
+	}else if ( eStop_Mode == LEFT ){
+		lcdSetCursor(12, 1);
+		lcdWrite(1);
+		lcdSetCursor(19, 1);
+		lcdWrite(2);
+	}else if ( eStop_Mode == RIGHT ){
+		lcdSetCursor(12, 1);
+		lcdWrite(0);
+		lcdSetCursor(19, 1);
+		lcdWrite(3);
+	}else if ( eStop_Mode == BOTH ){
+		lcdSetCursor(12, 1);
+		lcdWrite(0);
+		lcdSetCursor(19, 1);
+		lcdWrite(2);
+	}
+	if ( previousarrowMode != arrowMode){	//If previously arrowMode changed, clean the screen
+		lcdSetCursor(13, 1);
+		lcdPrint("      ");
+		arrowCounter = 0;
+	}
+	if (arrowMode == RIGHT){		//If arrowMode is right, print moving arrow to the right
+		if ( arrowCounter == 5 ){	//If the arrow is longer than 4 then write the end
+			lcdSetCursor( (13 + arrowCounter ) , 1);
+			lcdPrint(">");
+		}else if ( arrowCounter == 6 ){	//If the arrow is full size, then clean
+			lcdSetCursor(13, 1);
+			lcdPrint("      ");
+			arrowCounter = 0;
+			lcdSetCursor( (13 + arrowCounter ) , 1);
+			lcdPrint("-");
+		}else if ( arrowCounter < 5 ){	//If the arrow is lower than 5 then print one more line
+			lcdSetCursor( (13 + arrowCounter ) , 1);
+			lcdPrint("-");
+		}
+	}else if (arrowMode == LEFT){	//If arrowMode is left, print moving arrow to the left
+		if ( arrowCounter == 5 ){	//If the arrow is longer than 4 then write the end
+			lcdSetCursor( (18 - arrowCounter ) , 1);
+			lcdPrint("<");
+		}else if ( arrowCounter == 6 ){	//If the arrow is full size, then clean
+			lcdSetCursor(13, 1);
+			lcdPrint("      ");
+			arrowCounter = 0;
+			lcdSetCursor( (18 - arrowCounter ) , 1);
+			lcdPrint("-");
+		}else if ( arrowCounter < 5 ){	//If the arrow is lower than 5 then print one more line
+			lcdSetCursor( (18 - arrowCounter ) , 1);
+			lcdPrint("-");
+		}
+	}else if (arrowMode == STANDBY){
+
+	}
+	arrowCounter++;		//Increment the arrow counter
+	previousarrowMode = arrowMode;	//Set the previous arrow mode to the current one
+}
+
+/**
+* @brief Function to write string scrolling, used together with scrolling flag to move the text
+* @param - 	inputText : String which wanted to be printer
+* 			row : row in which we want to start printing
+* 			row : column in which we want to start printing
+* 			enable : Variable to enable or disable/clean scrolling text; TRUE or FALSE
+* @retval
+*/
+void Write_Text_Scrolling(char *inputText, uint16_t row, uint16_t col, uint16_t enable){
+	uint16_t textSize = strlen(inputText);
+	uint16_t availableSize = 19 - col;
+	static uint16_t offset;
+	static uint16_t scrollingStatus = FALSE;
+	uint16_t h = 0;
+	char temp_char[2] = {' ', '\0'};		//Need to add NULL character to write only ONE char each time
+	char *ptr = inputText;
+
+	if ( (scrollingStatus == FALSE) && (enable == TRUE) ){	//If scrolling was disable but Enable request arrived, print text
+		for ( uint16_t i = 0; i < availableSize; i++ ){		//Print the size which fit in the available size
+			lcdSetCursor(col + i, row);		//Increase the cursor
+			temp_char[0] = *(ptr + i);		//Transfer to the temp variable the character to print, printing one by one
+			lcdPrint(temp_char);			//Print each character
+		}
+		scrollingStatus = TRUE;				//Setting the scrolling status to enable
+		offset = 1;							//Initualization offset
+	}else if ( (scrollingStatus == TRUE) && (enable == TRUE) ) {	//If scrolling was enable already and request is to keep it enabled, scroll
+		for ( uint16_t e = 0; e < availableSize; e++ ){				//Print the text on the available size
+			lcdSetCursor(col + e, row);								//Set the cursor
+			if (offset >= ( textSize - availableSize ) ){			//If we move the text already all the way
+				if ( (e + offset) < textSize){						//Print the text size within the place
+					temp_char[0] = *(ptr + (e + offset) );
+					lcdPrint(temp_char);
+				}else{												//Once finished start printing the starting of the test at the end
+					temp_char[0] = *(ptr + h);
+					lcdPrint(temp_char);
+					h++;
+				}
+			}else{
+				temp_char[0] = *(ptr + (e + offset) );				//If there is still spots available print the char
+				lcdPrint(temp_char);
+			}
+		}
+		offset++;		//Increase offset by one
+		h = 0;			//Reset the h increment variable
+		if (offset == textSize){	//If we go trough all text size, restart offset variable
+			offset = 0;
+		}
+	}else if ( (scrollingStatus == TRUE) && (enable == FALSE) ) {	//If request to stop the scrolling and was previously activated, clean
+		scrollingStatus = FALSE;	//Set scrolling status to disabled
+		h = 0;	//Reset increment variable
+		offset = 0;	//Reset offset
+		for ( uint16_t i = 0; i < availableSize; i++ ){	//Print blank character in all the desired locations
+			lcdSetCursor(col + i, row);
+			lcdPrint(" ");
+		}
+	}else {
+
+	}
+
+}
+
+/**
+* @brief Function to track the steps, read the feedback on number of steps applied to the motor
+* @param -	status: Select status; DISABLE, ENABLE, READ
+* @retval
+*/
+uint32_t Step_Tracking(uint16_t status){
+	static uint16_t step_tracking_status = DISABLE;
+	uint32_t steps;
+	static uint32_t previous_steps = 0;
+
+	steps = TIM5->CNT - previous_steps;
+	previous_steps = TIM5->CNT;
+
+	if ( ( step_tracking_status == DISABLE ) && ( status == ENABLE ) ){
+		TIM5->CNT = 0;	//Re-start counter from zero
+		HAL_TIM_Base_Start(&htim5);		//Enable timer for pulse count
+		step_tracking_status = ENABLE;
+	}else if ( ( step_tracking_status == ENABLE ) && ( status == DISABLE ) ){
+		HAL_TIM_Base_Stop(&htim5);		//Disable timer for pulse count
+		TIM5->CNT = 0;	//Re-start counter to zero
+		step_tracking_status = DISABLE;
+	}
+	return steps;
 }
 
 /* USER CODE END 4 */

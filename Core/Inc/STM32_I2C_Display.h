@@ -79,6 +79,7 @@ void lcdNoAutoscroll(void);
 void lcdCreateChar(uint8_t, uint8_t[]);
 void lcdSetCursor(uint8_t, uint8_t);
 size_t lcdPrint(const char []);
+size_t lcdWrite(uint8_t value);
 //uint32_t DWT_Delay_Init(void);
 
 #endif /* INC_STM32_I2C_DISPLAY_H_ */
