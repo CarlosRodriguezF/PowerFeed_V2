@@ -60,6 +60,7 @@
 #define TIM11_preescaler 642		//Preescaler for TIM11, max 1 second
 #define ARROW_REFRESH 7 			//Times x100ms for Arrow Refresh (Example if 5 then 5x100ms = 500ms)
 #define SCROLLING_TEXT 2			//Times x100ms for Text Scrolling movement (Example if 5 then 5x100ms = 500ms)
+#define RPM_REFRESH 10				//Times x100ms for RPM reading (Example if 5 then 5x100ms = 500ms)
 //Definition absolute max/min values (Limiting as well the configuration)
 #define MAX_FAST_MOVEMENT_FEEDRATE 700	//Maximum feedrate for fas movement
 #define MAX_LIMIT_FEEDRATE	700			//Value as limit for feedrate
@@ -195,8 +196,11 @@ int32_t saved_pulses_counter = 0;		//Variable to storage the pulses and save the
 int32_t limit_pulses_counter = 0;		//Variable to storage the limit of pulses
 int32_t elimit_pulses_right = 0;		//Variable to storage the limit of right position
 int32_t elimit_pulses_left = 0;			//Variable to storage the limit of left position
+int32_t rpm_refresh_counter = 0;		//Variable to storage the counter for RPM refresh
 
-
+volatile uint32_t IC1register = 0;
+volatile uint32_t IC2register = 0;
+volatile uint32_t RPM_value = 0;
 
 /* FLAGS*/
 uint16_t update_speed = 0;				//Flag to update the speed
@@ -210,6 +214,9 @@ uint16_t arrow_flag = 0;				//Flag to print arrow
 uint16_t scrolling_flag = 0;			//Flag for scrolling
 uint16_t scrolling_flag_counter = 0;	//Flag for scrolling
 uint8_t estop_activated_flag = 0;		//Flag for e-stop activation
+int8_t rpm_refresh_flag = 0;			//Flag to update the RPM value
+int8_t RPM_available_flag = 0; 			//FLag for new RPM calculated
+
 
 /*Messages*/
 char eStopText[] = "Activate Power Feed or Keep push to CANCEL - ";
@@ -399,6 +406,8 @@ int main(void)
 				  lcdPrint("Feed Rate:");
 				  lcdSetCursor(0,1);
 				  lcdPrint("Mode: STOP ");
+	  			  lcdSetCursor(0,3);
+	  			  lcdPrint("Spindle RPM: ");
 		  		  target_feedrate = parameter.initial_feedrate;
 		  		  display_feedrate = target_feedrate;
 				  LCD_Write_Feedrate(display_feedrate, 11, 0);	//Print the default speed
@@ -427,6 +436,8 @@ int main(void)
 	  			  lcdSetCursor(0,2);
 	  			  lcdPrint("                  ");
 	  			  Write_Arrow(STANDBY, estop_status);
+	  			  lcdSetCursor(0,3);
+	  			  lcdPrint("Spindle RPM: ");
 	  		  }
 	  		  Update_Feedrate(&target_feedrate);				//Update the feedrate from encoder
 	  		  display_feedrate = target_feedrate;				//Update variable to display the feedrate
@@ -483,6 +494,9 @@ int main(void)
 	  			  previous_state = STANDBY;		//Setting previous state to STANDBY
 	  			  state = MOVE_LEFT;				//Change state to RIGHT
 	  			  lcd_update = TRUE;				//Set flag for LCD update
+	  		  }
+	  		  if (RPM_available_flag){
+	  			  LCD_Write_Number(RPM_value, 13, 3, SUBFIXNO);
 	  		  }
 	  		  break;
 	  	  case MOVE_RIGHT:	//Right state, movement to the RIGHT
@@ -1343,11 +1357,11 @@ static void MX_TIM4_Init(void)
 
   /* USER CODE END TIM4_Init 1 */
   htim4.Instance = TIM4;
-  htim4.Init.Prescaler = 0;
+  htim4.Init.Prescaler = 4199;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim4.Init.Period = 65535;
+  htim4.Init.Period = 20000;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
   {
     Error_Handler();
@@ -1412,7 +1426,7 @@ static void MX_TIM5_Init(void)
   sSlaveConfig.SlaveMode = TIM_SLAVEMODE_EXTERNAL1;
   sSlaveConfig.InputTrigger = TIM_TS_TI2FP2;
   sSlaveConfig.TriggerPolarity = TIM_TRIGGERPOLARITY_RISING;
-  sSlaveConfig.TriggerFilter = 5;
+  sSlaveConfig.TriggerFilter = 0;
   if (HAL_TIM_SlaveConfigSynchro(&htim5, &sSlaveConfig) != HAL_OK)
   {
     Error_Handler();
@@ -1609,6 +1623,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		delay100ms_counter += 1;
 		arrow_flag_counter += 1;
 		scrolling_flag_counter += 1;
+		rpm_refresh_counter += 1;
 		if ( arrow_flag_counter == ARROW_REFRESH){
 			arrow_flag_counter = 0;
 			arrow_flag = TRUE;
@@ -1616,6 +1631,38 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 		if (scrolling_flag_counter == SCROLLING_TEXT){
 			scrolling_flag_counter = 0;
 			scrolling_flag = TRUE;
+		}
+		if (rpm_refresh_counter == RPM_REFRESH){
+			rpm_refresh_counter = 0;
+			if ( rpm_refresh_flag == FALSE ){
+				TIM4->ARR = 20000;
+				HAL_TIM_Base_Start_IT(&htim4);
+				HAL_TIM_IC_Start_IT(&htim4, TIM_CHANNEL_2);
+				rpm_refresh_flag = TRUE;
+			}
+		}
+	}else if ( htim == &htim4 ){
+		RPM_value = 0;
+		rpm_refresh_flag = FALSE;
+		RPM_available_flag = TRUE;
+	}
+}
+
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
+	if ( htim == &htim4 ){
+		if (IC1register){
+			//IC1register = TIM4->CCR2;
+			IC1register = 0;
+			TIM4->CNT = 0;
+		}else{
+			IC2register = TIM4->CCR2;
+			HAL_TIM_Base_Stop_IT(&htim4);
+			HAL_TIM_IC_Stop_IT(&htim4, TIM_CHANNEL_2);
+			RPM_value = ( 1 / ((IC2register - IC1register)*0.0001) )*60;
+			IC1register = 10;
+			IC2register = 0;
+			rpm_refresh_flag = FALSE;
+			RPM_available_flag = TRUE;
 		}
 	}
 }
@@ -1737,13 +1784,12 @@ void LCD_Write_Number(int32_t value, int32_t col_pos, int32_t row_pos, int32_t s
 		}
 	}else{		// If value is Zero, print 0
 		lcdSetCursor(col_pos,row_pos);
+		lcdPrint("0");
 		if ( subfix == SUBFIXNO ){
-			lcdPrint("  ");
+			lcdPrint("   ");
 		}else if ( subfix == SUBFIXMMMIN ){
 			lcdPrint("mm/min");
 		}
-		lcdSetCursor(col_pos,row_pos);
-		lcdPrint("0");
 	}
 }
 
